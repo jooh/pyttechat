@@ -7,8 +7,10 @@
   const stopButton = document.getElementById('stop-button');
 
   let currentTurn = null;
+  let currentAssistant = null;
   let currentSource = null;
   let streamErrorTimer = null;
+  let abortRequested = false;
 
   function nearBottom() {
     return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 96;
@@ -67,7 +69,7 @@
 
   function setSubmitting(submitting) {
     sendButton.disabled = submitting;
-    stopButton.disabled = !submitting || !currentTurn;
+    stopButton.disabled = !submitting || !currentTurn || abortRequested;
     prompt.disabled = submitting;
   }
 
@@ -89,9 +91,18 @@
     clearStreamErrorTimer();
     closeSource();
     currentTurn = null;
+    currentAssistant = null;
+    abortRequested = false;
     setSubmitting(false);
     prompt.disabled = false;
     prompt.focus();
+  }
+
+  function markTurnError(assistant, message) {
+    assistant.article.classList.add('message-error');
+    if (!assistant.text.textContent) {
+      assistant.text.textContent = message;
+    }
   }
 
   async function submitPrompt(text) {
@@ -113,8 +124,54 @@
     return 'X-CSRF-Token';
   }
 
+  async function abortTurn(turn) {
+    const response = await fetch(`/chat/turns/${encodeURIComponent(turn.turn_id)}/abort`, {
+      method: 'POST',
+      headers: {
+        [csrfHeaderName()]: csrfToken,
+      },
+    });
+    if (!response.ok) {
+      throw new Error((await response.text()) || 'The turn could not be stopped.');
+    }
+  }
+
+  async function requestAbort(turn) {
+    abortRequested = true;
+    setSubmitting(true);
+    try {
+      await abortTurn(turn);
+    } catch (error) {
+      if (currentTurn === turn) {
+        abortRequested = false;
+        setSubmitting(true);
+      }
+      throw error;
+    }
+  }
+
+  async function abortDisconnectedTurn(turn, assistant) {
+    if (currentTurn !== turn) {
+      return;
+    }
+    try {
+      await requestAbort(turn);
+    } catch (error) {
+      if (currentTurn === turn) {
+        markTurnError(assistant, 'The response stream disconnected, and the turn could not be stopped.');
+      }
+      return;
+    }
+    if (currentTurn === turn) {
+      markTurnError(assistant, 'The response stream disconnected.');
+      finishTurn();
+    }
+  }
+
   function subscribe(turn, assistant) {
     currentTurn = turn;
+    currentAssistant = assistant;
+    abortRequested = false;
     currentSource = new EventSource(turn.stream_url);
 
     currentSource.onopen = function () {
@@ -148,21 +205,19 @@
     currentSource.addEventListener('stream-error', function (event) {
       clearStreamErrorTimer();
       const data = JSON.parse(event.data);
-      assistant.article.classList.add('message-error');
-      assistant.text.textContent = data.message || 'The response stream failed.';
+      const message = data.message || 'The response stream failed.';
+      markTurnError(assistant, message);
+      assistant.text.textContent = message;
       finishTurn();
     });
 
     currentSource.onerror = function () {
-      if (streamErrorTimer || !currentTurn) {
+      if (streamErrorTimer || !currentTurn || abortRequested) {
         return;
       }
       streamErrorTimer = setTimeout(function () {
-        assistant.article.classList.add('message-error');
-        if (!assistant.text.textContent) {
-          assistant.text.textContent = 'The response stream disconnected.';
-        }
-        finishTurn();
+        streamErrorTimer = null;
+        abortDisconnectedTurn(turn, assistant);
       }, 10000);
     };
   }
@@ -195,16 +250,16 @@
     if (!currentTurn) {
       return;
     }
-    stopButton.disabled = true;
+    const turn = currentTurn;
     try {
-      await fetch(`/chat/turns/${encodeURIComponent(currentTurn.turn_id)}/abort`, {
-        method: 'POST',
-        headers: {
-          [csrfHeaderName()]: csrfToken,
-        },
-      });
+      await requestAbort(turn);
+      if (currentTurn === turn) {
+        finishTurn();
+      }
     } catch (error) {
-      finishTurn();
+      if (currentTurn === turn && currentAssistant) {
+        markTurnError(currentAssistant, 'The turn could not be stopped.');
+      }
     }
   });
 })();
