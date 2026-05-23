@@ -67,6 +67,9 @@ func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
 	if requests[0].Model != "test-model" {
 		t.Fatalf("request model = %q, want test-model", requests[0].Model)
 	}
+	if requests[0].Reasoning != (llm.ReasoningOptions{}) {
+		t.Fatalf("request reasoning = %#v, want zero value without reasoning options", requests[0].Reasoning)
+	}
 }
 
 func TestSessionSendIncludesPriorTurnsAndReasoning(t *testing.T) {
@@ -113,6 +116,9 @@ func TestSessionSendIncludesPriorTurnsAndReasoning(t *testing.T) {
 	got := requests[1]
 	if got.Reasoning.Effort != "high" {
 		t.Fatalf("reasoning effort = %q, want high", got.Reasoning.Effort)
+	}
+	if got.Reasoning.Summary != "auto" {
+		t.Fatalf("reasoning summary = %q, want auto when reasoning is requested", got.Reasoning.Summary)
 	}
 	if len(got.Messages) != 3 {
 		t.Fatalf("second request message count = %d, want 3: %#v", len(got.Messages), got.Messages)

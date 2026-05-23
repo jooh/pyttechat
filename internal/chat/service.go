@@ -43,10 +43,12 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 	userMessage := llm.NewTextMessage(llm.RoleUser, prompt)
 	request := llm.Request{
 		Model: opts.Model,
-		Reasoning: llm.ReasoningOptions{
+	}
+	if effort := strings.TrimSpace(opts.ReasoningEffort); effort != "" {
+		request.Reasoning = llm.ReasoningOptions{
 			Summary: "auto",
-			Effort:  opts.ReasoningEffort,
-		},
+			Effort:  effort,
+		}
 	}
 
 	s.mu.Lock()

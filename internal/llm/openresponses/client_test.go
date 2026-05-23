@@ -7,10 +7,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"example.com/llm-chat-web/internal/llm"
 )
+
+func TestNewClientSetsDefaultTimeout(t *testing.T) {
+	client := NewClient("http://example.test")
+
+	if client.httpClient.Timeout <= 0 {
+		t.Fatalf("http client timeout = %s, want bounded default timeout", client.httpClient.Timeout)
+	}
+}
 
 func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	var requestBody map[string]any
@@ -39,7 +48,8 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	stream, err := client.Stream(context.Background(), llm.Request{
 		Model: "test-model",
 		Reasoning: llm.ReasoningOptions{
-			Effort: "low",
+			Summary: "auto",
+			Effort:  "low",
 		},
 		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
 	})
@@ -84,6 +94,30 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	reasoning := requestBody["reasoning"].(map[string]any)
 	if reasoning["summary"] != "auto" || reasoning["effort"] != "low" {
 		t.Fatalf("request reasoning = %#v, want summary auto and effort low", reasoning)
+	}
+}
+
+func TestClientOmitsReasoningByDefault(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("Decode request body error = %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_1"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	drainEvents(t, stream)
+
+	if _, ok := requestBody["reasoning"]; ok {
+		t.Fatalf("request reasoning = %#v, want omitted by default", requestBody["reasoning"])
 	}
 }
 
@@ -162,6 +196,38 @@ func TestClientReturnsStreamErrorEventsAsErrors(t *testing.T) {
 	_, err = stream.Next()
 	if err == nil || !errors.Is(err, ErrStreamFailed) {
 		t.Fatalf("Next() error = %v, want ErrStreamFailed", err)
+	}
+}
+
+func TestClientStreamsLongSSEDataLines(t *testing.T) {
+	longDelta := strings.Repeat("x", 1024*1024+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, err := json.Marshal(map[string]any{
+			"type":  "response.output_text.delta",
+			"delta": longDelta,
+		})
+		if err != nil {
+			t.Fatalf("Marshal payload error = %v", err)
+		}
+		_, _ = io.WriteString(w, "data: "+string(payload)+"\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventTextDelta || len(event.Delta) != len(longDelta) {
+		t.Fatalf("event = %q delta length %d, want text delta length %d", event.Type, len(event.Delta), len(longDelta))
 	}
 }
 

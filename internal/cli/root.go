@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"example.com/llm-chat-web/internal/buildinfo"
 	"example.com/llm-chat-web/internal/chat"
@@ -22,12 +23,19 @@ type rootOptions struct {
 	proxyURL        string
 	model           string
 	reasoningEffort string
+	proxyTimeout    time.Duration
 }
 
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	opts := rootOptions{
-		proxyURL: os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
-		model:    os.Getenv("PYTTECHAT_MODEL"),
+		proxyURL:     os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
+		model:        os.Getenv("PYTTECHAT_MODEL"),
+		proxyTimeout: openresponses.DefaultTimeout,
+	}
+	if value := os.Getenv("PYTTECHAT_LLM_PROXY_TIMEOUT"); value != "" {
+		if timeout, err := time.ParseDuration(value); err == nil && timeout > 0 {
+			opts.proxyTimeout = timeout
+		}
 	}
 
 	rootCmd := &cobra.Command{
@@ -41,6 +49,7 @@ func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&opts.proxyURL, "proxy-url", opts.proxyURL, "OpenResponses-compatible LLM proxy base URL")
 	rootCmd.PersistentFlags().StringVarP(&opts.model, "model", "m", opts.model, "model name to forward to the LLM proxy")
 	rootCmd.PersistentFlags().StringVar(&opts.reasoningEffort, "reasoning-effort", opts.reasoningEffort, "reasoning effort to forward to the LLM proxy")
+	rootCmd.PersistentFlags().DurationVar(&opts.proxyTimeout, "proxy-timeout", opts.proxyTimeout, "LLM proxy request timeout")
 
 	rootCmd.AddCommand(newAskCommand(stdout, stderr, &opts))
 	rootCmd.AddCommand(newChatCommand(stdin, stdout, stderr, &opts))
@@ -82,6 +91,7 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 	return &cobra.Command{
 		Use:   "chat",
 		Short: "Start an ephemeral multi-turn chat session",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			session := chat.NewService(newLLMClient(*opts)).NewSession()
 			scanner := bufio.NewScanner(stdin)
@@ -107,7 +117,7 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 
 func newLLMClient(opts rootOptions) llm.Client {
 	if opts.proxyURL != "" {
-		return openresponses.NewClient(opts.proxyURL)
+		return openresponses.NewClientWithTimeout(opts.proxyURL, opts.proxyTimeout)
 	}
 	return dummy.NewClient()
 }

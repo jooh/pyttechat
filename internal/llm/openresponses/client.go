@@ -11,11 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
 )
 
 var ErrStreamFailed = errors.New("openresponses stream failed")
+
+const DefaultTimeout = 5 * time.Minute
 
 type Client struct {
 	baseURL    string
@@ -23,9 +26,16 @@ type Client struct {
 }
 
 func NewClient(baseURL string) *Client {
+	return NewClientWithTimeout(baseURL, DefaultTimeout)
+}
+
+func NewClientWithTimeout(baseURL string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: http.DefaultClient,
+		httpClient: &http.Client{Timeout: timeout},
 	}
 }
 
@@ -52,11 +62,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 		return nil, fmt.Errorf("%w: status %d: %s", ErrStreamFailed, response.StatusCode, strings.TrimSpace(string(errorBody)))
 	}
 
-	scanner := bufio.NewScanner(response.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	return &stream{
-		body:    response.Body,
-		scanner: scanner,
+		body:   response.Body,
+		reader: bufio.NewReader(response.Body),
 	}, nil
 }
 
@@ -81,12 +89,8 @@ func (c *Client) createRequestBody(request llm.Request) map[string]any {
 	}
 
 	reasoning := map[string]any{}
-	summary := request.Reasoning.Summary
-	if summary == "" {
-		summary = "auto"
-	}
-	if summary != "" {
-		reasoning["summary"] = summary
+	if request.Reasoning.Summary != "" {
+		reasoning["summary"] = request.Reasoning.Summary
 	}
 	if request.Reasoning.Effort != "" {
 		reasoning["effort"] = request.Reasoning.Effort
@@ -158,10 +162,10 @@ func reasoningSummary(summary []string) []map[string]string {
 }
 
 type stream struct {
-	body    io.ReadCloser
-	scanner *bufio.Scanner
-	data    []string
-	done    bool
+	body   io.ReadCloser
+	reader *bufio.Reader
+	data   []string
+	done   bool
 }
 
 func (s *stream) Next() (llm.Event, error) {
@@ -169,8 +173,20 @@ func (s *stream) Next() (llm.Event, error) {
 		return llm.Event{}, io.EOF
 	}
 
-	for s.scanner.Scan() {
-		line := s.scanner.Text()
+	for {
+		line, err := s.readLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				event, ok, dispatchErr := s.dispatch()
+				if dispatchErr != nil || ok {
+					return event, dispatchErr
+				}
+				s.done = true
+				return llm.Event{}, io.EOF
+			}
+			return llm.Event{}, err
+		}
+
 		if line == "" {
 			event, ok, err := s.dispatch()
 			if err != nil || ok {
@@ -179,27 +195,29 @@ func (s *stream) Next() (llm.Event, error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "event:") {
+		if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
-			s.data = append(s.data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			s.data = append(s.data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 		}
 	}
-	if err := s.scanner.Err(); err != nil {
-		return llm.Event{}, err
-	}
-
-	event, ok, err := s.dispatch()
-	if err != nil || ok {
-		return event, err
-	}
-	s.done = true
-	return llm.Event{}, io.EOF
 }
 
 func (s *stream) Close() error {
 	return s.body.Close()
+}
+
+func (s *stream) readLine() (string, error) {
+	line, err := s.reader.ReadString('\n')
+	if err != nil {
+		if !errors.Is(err, io.EOF) || line == "" {
+			return "", err
+		}
+	}
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	return line, nil
 }
 
 func (s *stream) dispatch() (llm.Event, bool, error) {

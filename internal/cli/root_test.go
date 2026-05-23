@@ -11,6 +11,7 @@ func runCommand(t *testing.T, stdin string, args ...string) (int, string, string
 	t.Helper()
 	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
 	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -50,6 +51,17 @@ func TestChatCommandKeepsOneEphemeralSession(t *testing.T) {
 
 	if strings.Count(stderr, "Thinking") != 2 {
 		t.Fatalf("stderr = %q, want two streamed reasoning blocks", stderr)
+	}
+}
+
+func TestChatCommandRejectsArgs(t *testing.T) {
+	code, _, stderr := runCommand(t, "", "chat", "unexpected")
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, `unknown command "unexpected"`) && !strings.Contains(stderr, "accepts 0 arg(s)") {
+		t.Fatalf("stderr = %q, want argument error", stderr)
 	}
 }
 
