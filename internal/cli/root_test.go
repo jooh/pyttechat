@@ -3,6 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -10,6 +14,7 @@ import (
 func runCommand(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
 	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
 	t.Setenv("PYTTECHAT_MODEL", "")
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
 
@@ -51,6 +56,67 @@ func TestChatCommandKeepsOneEphemeralSession(t *testing.T) {
 
 	if strings.Count(stderr, "Thinking") != 2 {
 		t.Fatalf("stderr = %q, want two streamed reasoning blocks", stderr)
+	}
+}
+
+func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
+	var requestBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer proxy-token" {
+			t.Fatalf("Authorization header = %q, want proxy bearer token", got)
+		}
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode request body error = %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+
+		responseText := "first answer"
+		if len(requestBodies) == 2 {
+			responseText = "second answer"
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"text":"`+responseText+`"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", server.URL)
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "proxy-token")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"chat"}, strings.NewReader("first\nsecond\n"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "first answer\nsecond answer\n" {
+		t.Fatalf("stdout = %q, want both proxy answers", got)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requestBodies))
+	}
+
+	input := requestBodies[1]["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("second request input count = %d, want prior user, assistant, next user: %#v", len(input), input)
+	}
+	firstUser := input[0].(map[string]any)
+	priorAssistant := input[1].(map[string]any)
+	secondUser := input[2].(map[string]any)
+	if firstUser["role"] != "user" || firstUser["content"] != "first" {
+		t.Fatalf("first input = %#v, want first user turn", firstUser)
+	}
+	if priorAssistant["role"] != "assistant" || priorAssistant["content"] != "first answer" {
+		t.Fatalf("prior assistant input = %#v, want first assistant answer", priorAssistant)
+	}
+	if secondUser["role"] != "user" || secondUser["content"] != "second" {
+		t.Fatalf("second input = %#v, want second user turn", secondUser)
 	}
 }
 

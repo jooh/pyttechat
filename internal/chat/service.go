@@ -9,7 +9,10 @@ import (
 	"example.com/llm-chat-web/internal/llm"
 )
 
-var ErrEmptyPrompt = errors.New("prompt must not be empty")
+var (
+	ErrEmptyPrompt    = errors.New("prompt must not be empty")
+	ErrTurnInProgress = errors.New("turn already in progress")
+)
 
 type Service struct {
 	client llm.Client
@@ -27,6 +30,7 @@ type Session struct {
 	mu       sync.Mutex
 	client   llm.Client
 	messages []llm.Message
+	inFlight bool
 }
 
 type SendOptions struct {
@@ -52,11 +56,17 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 	}
 
 	s.mu.Lock()
+	if s.inFlight {
+		s.mu.Unlock()
+		return nil, ErrTurnInProgress
+	}
 	request.Messages = append(llm.CloneMessages(s.messages), userMessage.Clone())
+	s.inFlight = true
 	s.mu.Unlock()
 
 	stream, err := s.client.Stream(ctx, request)
 	if err != nil {
+		s.releaseTurn()
 		return nil, err
 	}
 
@@ -86,6 +96,7 @@ type TurnStream struct {
 func (s *TurnStream) Next() (llm.Event, error) {
 	event, err := s.stream.Next()
 	if err != nil {
+		s.abort()
 		return llm.Event{}, err
 	}
 
@@ -101,6 +112,7 @@ func (s *TurnStream) Next() (llm.Event, error) {
 		s.finalize()
 	case llm.EventError:
 		if event.Err != nil {
+			s.abort()
 			return event, event.Err
 		}
 	}
@@ -109,6 +121,7 @@ func (s *TurnStream) Next() (llm.Event, error) {
 }
 
 func (s *TurnStream) Close() error {
+	s.abort()
 	return s.stream.Close()
 }
 
@@ -134,7 +147,7 @@ func (s *TurnStream) mergeCompletedPart(part llm.Part) {
 			if s.assistantParts[i].Type != llm.PartReasoning {
 				continue
 			}
-			if part.Text != "" && s.assistantParts[i].Text == "" {
+			if part.Text != "" {
 				s.assistantParts[i].Text = part.Text
 			}
 			if part.ID != "" {
@@ -145,6 +158,18 @@ func (s *TurnStream) mergeCompletedPart(part llm.Part) {
 			}
 			if part.EncryptedContent != "" {
 				s.assistantParts[i].EncryptedContent = part.EncryptedContent
+			}
+			return
+		}
+	}
+
+	if part.Type == llm.PartText {
+		for i := len(s.assistantParts) - 1; i >= 0; i-- {
+			if s.assistantParts[i].Type != llm.PartText {
+				continue
+			}
+			if part.Text != "" {
+				s.assistantParts[i].Text = part.Text
 			}
 			return
 		}
@@ -167,6 +192,21 @@ func (s *TurnStream) finalize() {
 	s.session.mu.Lock()
 	defer s.session.mu.Unlock()
 	s.session.messages = append(s.session.messages, s.userMessage.Clone(), assistant)
+	s.session.inFlight = false
+}
+
+func (s *TurnStream) abort() {
+	if s.finalized {
+		return
+	}
+	s.finalized = true
+	s.session.releaseTurn()
+}
+
+func (s *Session) releaseTurn() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inFlight = false
 }
 
 func cloneParts(parts []llm.Part) []llm.Part {

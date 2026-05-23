@@ -21,6 +21,7 @@ import (
 
 type rootOptions struct {
 	proxyURL        string
+	proxyToken      string
 	model           string
 	reasoningEffort string
 	proxyTimeout    time.Duration
@@ -29,6 +30,7 @@ type rootOptions struct {
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	opts := rootOptions{
 		proxyURL:     os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
+		proxyToken:   os.Getenv("PYTTECHAT_LLM_PROXY_TOKEN"),
 		model:        os.Getenv("PYTTECHAT_MODEL"),
 		proxyTimeout: openresponses.DefaultTimeout,
 	}
@@ -117,7 +119,10 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 
 func newLLMClient(opts rootOptions) llm.Client {
 	if opts.proxyURL != "" {
-		return openresponses.NewClientWithTimeout(opts.proxyURL, opts.proxyTimeout)
+		return openresponses.NewClientWithOptions(opts.proxyURL, openresponses.Options{
+			Timeout:     opts.proxyTimeout,
+			BearerToken: opts.proxyToken,
+		})
 	}
 	return dummy.NewClient()
 }

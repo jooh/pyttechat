@@ -162,6 +162,58 @@ func TestSessionDoesNotStoreFailedTurn(t *testing.T) {
 	}
 }
 
+func TestSessionRejectsConcurrentTurnsUntilStreamCloses(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{{Type: llm.EventCompleted}},
+	}).NewSession()
+
+	first, err := session.Send(context.Background(), "first", SendOptions{})
+	if err != nil {
+		t.Fatalf("first Send() error = %v, want nil", err)
+	}
+
+	_, err = session.Send(context.Background(), "second", SendOptions{})
+	if !errors.Is(err, ErrTurnInProgress) {
+		t.Fatalf("concurrent Send() error = %v, want %v", err, ErrTurnInProgress)
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+
+	second, err := session.Send(context.Background(), "second", SendOptions{})
+	if err != nil {
+		t.Fatalf("second Send() after close error = %v, want nil", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close() error = %v, want nil", err)
+	}
+}
+
+func TestSessionMergesCompletedTextPartWithoutDuplicatingDeltas(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventTextDelta, Delta: "hel"},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartText, Text: "hello"}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(messages))
+	}
+	if got := messages[1].Text(); got != "hello" {
+		t.Fatalf("assistant text = %q, want final completed text without duplicated delta", got)
+	}
+}
+
 type failingClient struct{}
 
 func (failingClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
@@ -175,6 +227,32 @@ func (failingStream) Next() (llm.Event, error) {
 }
 
 func (failingStream) Close() error {
+	return nil
+}
+
+type eventClient struct {
+	events []llm.Event
+}
+
+func (c eventClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return &eventStream{events: append([]llm.Event(nil), c.events...)}, nil
+}
+
+type eventStream struct {
+	events []llm.Event
+	index  int
+}
+
+func (s *eventStream) Next() (llm.Event, error) {
+	if s.index >= len(s.events) {
+		return llm.Event{}, io.EOF
+	}
+	event := s.events[s.index]
+	s.index++
+	return event, nil
+}
+
+func (*eventStream) Close() error {
 	return nil
 }
 

@@ -44,7 +44,9 @@ printf 'hello\nagain\n' | ./bin/pyttechat chat
 Use an OpenResponses-compatible LLM proxy:
 
 ```sh
-PYTTECHAT_LLM_PROXY_URL=http://localhost:8080 ./bin/pyttechat --model gpt-example chat
+PYTTECHAT_LLM_PROXY_URL=http://localhost:8080 \
+PYTTECHAT_LLM_PROXY_TOKEN=token-value \
+  ./bin/pyttechat --model gpt-example chat
 ```
 
 Set `--reasoning-effort` when you want to request model reasoning options. Assistant answer text streams to stdout. Reasoning events, when returned, stream separately to stderr. Proxy requests default to a 5-minute timeout; override it with `--proxy-timeout` or `PYTTECHAT_LLM_PROXY_TIMEOUT`.

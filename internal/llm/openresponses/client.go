@@ -21,8 +21,14 @@ var ErrStreamFailed = errors.New("openresponses stream failed")
 const DefaultTimeout = 5 * time.Minute
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL     string
+	httpClient  *http.Client
+	bearerToken string
+}
+
+type Options struct {
+	Timeout     time.Duration
+	BearerToken string
 }
 
 func NewClient(baseURL string) *Client {
@@ -30,12 +36,19 @@ func NewClient(baseURL string) *Client {
 }
 
 func NewClientWithTimeout(baseURL string, timeout time.Duration) *Client {
+	return NewClientWithOptions(baseURL, Options{Timeout: timeout})
+}
+
+func NewClientWithOptions(baseURL string, opts Options) *Client {
+	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: timeout},
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		httpClient:  &http.Client{Timeout: timeout},
+		bearerToken: strings.TrimSpace(opts.BearerToken),
 	}
 }
 
@@ -51,6 +64,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 	}
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("Content-Type", "application/json")
+	if c.bearerToken != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
@@ -63,8 +79,9 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 	}
 
 	return &stream{
-		body:   response.Body,
-		reader: bufio.NewReader(response.Body),
+		body:     response.Body,
+		reader:   bufio.NewReader(response.Body),
+		textSeen: map[string]bool{},
 	}, nil
 }
 
@@ -162,10 +179,11 @@ func reasoningSummary(summary []string) []map[string]string {
 }
 
 type stream struct {
-	body   io.ReadCloser
-	reader *bufio.Reader
-	data   []string
-	done   bool
+	body     io.ReadCloser
+	reader   *bufio.Reader
+	data     []string
+	done     bool
+	textSeen map[string]bool
 }
 
 func (s *stream) Next() (llm.Event, error) {
@@ -236,16 +254,31 @@ func (s *stream) dispatch() (llm.Event, bool, error) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return llm.Event{}, false, err
 	}
-	return mapPayload(payload)
+	return s.mapPayload(payload)
 }
 
-func mapPayload(payload map[string]any) (llm.Event, bool, error) {
+func (s *stream) mapPayload(payload map[string]any) (llm.Event, bool, error) {
 	eventType, _ := payload["type"].(string)
 	switch eventType {
 	case "response.output_text.delta":
+		s.markTextSeen(contentKey(payload))
 		return llm.Event{
 			Type:  llm.EventTextDelta,
 			Delta: stringField(payload, "delta"),
+		}, true, nil
+	case "response.output_text.done":
+		key := contentKey(payload)
+		if s.textSeen[key] {
+			return llm.Event{}, false, nil
+		}
+		text := stringField(payload, "text")
+		if text == "" {
+			return llm.Event{}, false, nil
+		}
+		s.markTextSeen(key)
+		return llm.Event{
+			Type:  llm.EventTextDelta,
+			Delta: text,
 		}, true, nil
 	case "response.reasoning.delta", "response.reasoning_summary_text.delta":
 		return llm.Event{
@@ -255,7 +288,11 @@ func mapPayload(payload map[string]any) (llm.Event, bool, error) {
 	case "response.output_item.done":
 		part := outputItemPart(payload)
 		if part.Type == "" {
-			return llm.Event{}, false, nil
+			text := s.missingMessageText(payload)
+			if text == "" {
+				return llm.Event{}, false, nil
+			}
+			return llm.Event{Type: llm.EventTextDelta, Delta: text}, true, nil
 		}
 		return llm.Event{Type: llm.EventOutputItemDone, Part: part}, true, nil
 	case "response.completed":
@@ -265,6 +302,53 @@ func mapPayload(payload map[string]any) (llm.Event, bool, error) {
 	default:
 		return llm.Event{}, false, nil
 	}
+}
+
+func (s *stream) missingMessageText(payload map[string]any) string {
+	item, _ := payload["item"].(map[string]any)
+	if item["type"] != "message" || item["role"] != string(llm.RoleAssistant) {
+		return ""
+	}
+
+	rawContent, _ := item["content"].([]any)
+	outputIndex := intField(payload, "output_index")
+	itemID := stringField(item, "id")
+	var text string
+	for i, value := range rawContent {
+		part, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if part["type"] != "output_text" && part["type"] != "text" {
+			continue
+		}
+		partText := stringField(part, "text")
+		if partText == "" {
+			continue
+		}
+		key := textContentKey(itemID, outputIndex, i)
+		if s.textSeen[key] {
+			continue
+		}
+		s.markTextSeen(key)
+		text += partText
+	}
+	return text
+}
+
+func (s *stream) markTextSeen(key string) {
+	if s.textSeen == nil {
+		s.textSeen = map[string]bool{}
+	}
+	s.textSeen[key] = true
+}
+
+func contentKey(payload map[string]any) string {
+	return textContentKey(stringField(payload, "item_id"), intField(payload, "output_index"), intField(payload, "content_index"))
+}
+
+func textContentKey(itemID string, outputIndex, contentIndex int) string {
+	return fmt.Sprintf("%s/%d/%d", itemID, outputIndex, contentIndex)
 }
 
 func outputItemPart(payload map[string]any) llm.Part {

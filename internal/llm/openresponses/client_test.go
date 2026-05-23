@@ -97,6 +97,106 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	}
 }
 
+func TestClientSendsBearerToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization header = %q, want bearer token", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClientWithOptions(server.URL, Options{BearerToken: "test-token"}).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	drainEvents(t, stream)
+}
+
+func TestClientStreamsOutputTextDoneWhenNoDeltaArrived(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"text":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want text and completed events: %#v", len(events), events)
+	}
+	if events[0].Type != llm.EventTextDelta || events[0].Delta != "Hello" {
+		t.Fatalf("first event = %#v, want text delta Hello", events[0])
+	}
+}
+
+func TestClientStreamsMessageOutputItemDoneWhenNoTextEventsArrived(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello from item"}]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want text and completed events: %#v", len(events), events)
+	}
+	if events[0].Type != llm.EventTextDelta || events[0].Delta != "Hello from item" {
+		t.Fatalf("first event = %#v, want text from completed message item", events[0])
+	}
+}
+
+func TestClientDoesNotDuplicateFinalTextAfterDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"text":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":4,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	var text string
+	for _, event := range events {
+		if event.Type == llm.EventTextDelta {
+			text += event.Delta
+		}
+	}
+	if text != "Hello" {
+		t.Fatalf("streamed text = %q, want exactly one final answer", text)
+	}
+}
+
 func TestClientOmitsReasoningByDefault(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
