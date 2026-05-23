@@ -53,3 +53,5 @@ Grafana is a targeted enterprise OAuth/OIDC reference for generic provider confi
 LibreChat is included as a mature LLM chat product and UX reference. Use it to study conversation behavior, streaming response UX, message rendering, provider/model concepts, and configuration boundaries. This project is intentionally not trying to replicate LibreChat's Node/React SPA implementation stack.
 
 LLM is included as a mature LLM CLI reference. Use it to study one-shot prompts, interactive chat behavior, continuation semantics, logging, model/options command design, and backend-testable LLM workflows. This project is intentionally not trying to replicate LLM's Python package, plugin ecosystem, or provider orchestration.
+
+OpenResponses is included as the Responses API specification reference for LLM-side interoperability. Use it to study request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations. This project should not adopt OpenResponses' documentation-site toolchain or generated artifacts as application dependencies.

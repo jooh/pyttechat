@@ -44,6 +44,7 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Grafana is only a targeted reference for enterprise OAuth/OIDC edge cases, including generic OAuth configuration, claim mapping, role/group mapping, token refresh, and session lifetime patterns. Do not use Grafana as a general architecture template.
 - LibreChat is a product and behavior reference for mature LLM chat UX. Use it to understand conversation list behavior, message lifecycle, streaming response UX, multi-model/provider concepts, file/image/message rendering patterns, and admin/configuration concepts worth avoiding or simplifying. Do not copy LibreChat's frontend architecture. This project intentionally avoids a Node/React SPA architecture for now.
 - LLM is a CLI behavior reference for LLM prompt and chat workflows. Use it to understand command ergonomics, interactive chat loops, model/options UX, conversation continuation, prompt/response logging, usage metadata, fragments, schemas, and tool-call visibility. Do not copy LLM's Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration.
+- OpenResponses is the Responses API specification reference for LLM-side interoperability. Use it to understand request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations. Do not adopt its documentation-site toolchain or generated artifacts as project dependencies.
 
 ## Git strategy
 

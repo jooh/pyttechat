@@ -30,3 +30,10 @@ These submodules are read-only design references. Do not copy their code into th
 - Useful for studying command ergonomics, interactive chat loops, conversation continuation, model/options UX, prompt and response logging, usage metadata, fragments, schemas, and tool-call visibility.
 - Not an implementation architecture reference for this Go app.
 - Do not copy Python code, adopt its plugin runtime, or add Python dependencies merely because LLM uses them.
+
+## OpenResponses
+
+- Responses API specification reference for LLM-side interoperability.
+- Useful for studying request and response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations.
+- Not an implementation architecture reference for this Go app.
+- Do not adopt its documentation-site toolchain or generated artifacts as application dependencies.

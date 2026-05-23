@@ -18,3 +18,7 @@
 	path = third_party/reference/llm
 	url = https://github.com/simonw/llm.git
 	shallow = true
+[submodule "third_party/reference/openresponses"]
+	path = third_party/reference/openresponses
+	url = https://github.com/openresponses/openresponses.git
+	shallow = true
