@@ -2,14 +2,131 @@ package llm
 
 import "context"
 
-type Request struct {
-	Prompt string
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+)
+
+type PartType string
+
+const (
+	PartText      PartType = "text"
+	PartReasoning PartType = "reasoning"
+)
+
+type Part struct {
+	Type             PartType
+	Text             string
+	ID               string
+	Summary          []string
+	EncryptedContent string
 }
 
-type Response struct {
-	Text string
+func (p Part) Clone() Part {
+	clone := p
+	if p.Summary != nil {
+		clone.Summary = append([]string(nil), p.Summary...)
+	}
+	return clone
+}
+
+type Message struct {
+	Role  Role
+	Parts []Part
+}
+
+func NewTextMessage(role Role, text string) Message {
+	return Message{
+		Role: role,
+		Parts: []Part{
+			{Type: PartText, Text: text},
+		},
+	}
+}
+
+func (m Message) Text() string {
+	var text string
+	for _, part := range m.Parts {
+		if part.Type == PartText {
+			text += part.Text
+		}
+	}
+	return text
+}
+
+func (m Message) Clone() Message {
+	clone := Message{Role: m.Role}
+	if m.Parts != nil {
+		clone.Parts = make([]Part, len(m.Parts))
+		for i, part := range m.Parts {
+			clone.Parts[i] = part.Clone()
+		}
+	}
+	return clone
+}
+
+func CloneMessages(messages []Message) []Message {
+	if messages == nil {
+		return nil
+	}
+	clone := make([]Message, len(messages))
+	for i, message := range messages {
+		clone[i] = message.Clone()
+	}
+	return clone
+}
+
+type ReasoningOptions struct {
+	Summary string
+	Effort  string
+}
+
+type Request struct {
+	Model     string
+	Messages  []Message
+	Reasoning ReasoningOptions
+}
+
+func (r Request) Clone() Request {
+	clone := r
+	clone.Messages = CloneMessages(r.Messages)
+	return clone
+}
+
+type Usage struct {
+	InputTokens     int
+	OutputTokens    int
+	TotalTokens     int
+	ReasoningTokens int
+}
+
+type EventType string
+
+const (
+	EventTextDelta      EventType = "text_delta"
+	EventReasoningDelta EventType = "reasoning_delta"
+	EventOutputItemDone EventType = "output_item_done"
+	EventCompleted      EventType = "completed"
+	EventError          EventType = "error"
+)
+
+type Event struct {
+	Type       EventType
+	Delta      string
+	Part       Part
+	ResponseID string
+	Usage      *Usage
+	Err        error
+}
+
+type Stream interface {
+	Next() (Event, error)
+	Close() error
 }
 
 type Client interface {
-	Complete(ctx context.Context, request Request) (Response, error)
+	Stream(ctx context.Context, request Request) (Stream, error)
 }

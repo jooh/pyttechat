@@ -2,7 +2,7 @@
 
 Minimal Go scaffold for a server-rendered LLM chat web app. The app is intended to act as a Backend for Frontend between a browser chat UI and an enterprise LLM proxy API.
 
-Status: early backend POC. The repository currently has a small `pyttechat` CLI with a dummy LLM implementation. It does not implement the web chat application yet.
+Status: early backend POC. The repository currently has a streaming `pyttechat` CLI with a dummy LLM implementation and an OpenResponses-compatible proxy client. It does not implement the web chat application yet.
 
 ## Quick Start
 
@@ -34,6 +34,20 @@ Send a prompt to the dummy LLM:
 ```sh
 ./bin/pyttechat ask "hello"
 ```
+
+Start a single ephemeral multi-turn chat session. Each input line is sent as the next user turn:
+
+```sh
+printf 'hello\nagain\n' | ./bin/pyttechat chat
+```
+
+Use an OpenResponses-compatible LLM proxy:
+
+```sh
+PYTTECHAT_LLM_PROXY_URL=http://localhost:8080 ./bin/pyttechat --model gpt-example chat
+```
+
+Assistant answer text streams to stdout. Reasoning text streams separately to stderr.
 
 ## Pre-Commit
 

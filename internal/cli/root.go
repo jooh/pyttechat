@@ -1,21 +1,34 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"example.com/llm-chat-web/internal/buildinfo"
 	"example.com/llm-chat-web/internal/chat"
+	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
+	"example.com/llm-chat-web/internal/llm/openresponses"
 
 	"github.com/spf13/cobra"
 )
 
-func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
-	service := chat.NewService(dummy.NewClient())
+type rootOptions struct {
+	proxyURL        string
+	model           string
+	reasoningEffort string
+}
+
+func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+	opts := rootOptions{
+		proxyURL: os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
+		model:    os.Getenv("PYTTECHAT_MODEL"),
+	}
 
 	rootCmd := &cobra.Command{
 		Use:           "pyttechat",
@@ -25,14 +38,18 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	rootCmd.SetOut(stdout)
 	rootCmd.SetErr(stderr)
+	rootCmd.PersistentFlags().StringVar(&opts.proxyURL, "proxy-url", opts.proxyURL, "OpenResponses-compatible LLM proxy base URL")
+	rootCmd.PersistentFlags().StringVarP(&opts.model, "model", "m", opts.model, "model name to forward to the LLM proxy")
+	rootCmd.PersistentFlags().StringVar(&opts.reasoningEffort, "reasoning-effort", opts.reasoningEffort, "reasoning effort to forward to the LLM proxy")
 
-	rootCmd.AddCommand(newAskCommand(stdout, service))
+	rootCmd.AddCommand(newAskCommand(stdout, stderr, &opts))
+	rootCmd.AddCommand(newChatCommand(stdin, stdout, stderr, &opts))
 	rootCmd.AddCommand(newVersionCommand(stdout))
 
 	return rootCmd
 }
 
-func newAskCommand(stdout io.Writer, service chat.Service) *cobra.Command {
+func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ask PROMPT",
 		Short: "Send a prompt to the configured LLM",
@@ -44,7 +61,11 @@ func newAskCommand(stdout io.Writer, service chat.Service) *cobra.Command {
 				return fmt.Errorf("prompt is required")
 			}
 
-			response, err := service.Send(cmd.Context(), strings.Join(args, " "))
+			session := chat.NewService(newLLMClient(*opts)).NewSession()
+			stream, err := session.Send(cmd.Context(), strings.Join(args, " "), chat.SendOptions{
+				Model:           opts.model,
+				ReasoningEffort: opts.reasoningEffort,
+			})
 			if err != nil {
 				if errors.Is(err, chat.ErrEmptyPrompt) {
 					return fmt.Errorf("prompt must not be empty")
@@ -52,10 +73,77 @@ func newAskCommand(stdout io.Writer, service chat.Service) *cobra.Command {
 				return err
 			}
 
-			_, err = fmt.Fprintln(stdout, response.Text)
-			return err
+			return printStream(stream, stdout, stderr)
 		},
 	}
+}
+
+func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "chat",
+		Short: "Start an ephemeral multi-turn chat session",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			session := chat.NewService(newLLMClient(*opts)).NewSession()
+			scanner := bufio.NewScanner(stdin)
+			for scanner.Scan() {
+				stream, err := session.Send(cmd.Context(), scanner.Text(), chat.SendOptions{
+					Model:           opts.model,
+					ReasoningEffort: opts.reasoningEffort,
+				})
+				if err != nil {
+					if errors.Is(err, chat.ErrEmptyPrompt) {
+						return fmt.Errorf("prompt must not be empty")
+					}
+					return err
+				}
+				if err := printStream(stream, stdout, stderr); err != nil {
+					return err
+				}
+			}
+			return scanner.Err()
+		},
+	}
+}
+
+func newLLMClient(opts rootOptions) llm.Client {
+	if opts.proxyURL != "" {
+		return openresponses.NewClient(opts.proxyURL)
+	}
+	return dummy.NewClient()
+}
+
+func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {
+	defer stream.Close()
+
+	wroteText := false
+	for {
+		event, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		switch event.Type {
+		case llm.EventTextDelta:
+			if _, err := fmt.Fprint(stdout, event.Delta); err != nil {
+				return err
+			}
+			if event.Delta != "" {
+				wroteText = true
+			}
+		case llm.EventReasoningDelta:
+			if _, err := fmt.Fprint(stderr, event.Delta); err != nil {
+				return err
+			}
+		}
+	}
+	if wroteText {
+		_, err := fmt.Fprintln(stdout)
+		return err
+	}
+	return nil
 }
 
 func printUsageToError(cmd *cobra.Command) error {
@@ -78,8 +166,8 @@ func newVersionCommand(stdout io.Writer) *cobra.Command {
 	}
 }
 
-func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	cmd := NewRootCommand(stdout, stderr)
+func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	cmd := NewRootCommand(stdin, stdout, stderr)
 	cmd.SetArgs(args)
 	cmd.SetContext(ctx)
 
