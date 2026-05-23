@@ -29,6 +29,21 @@ The chat web app owns login, secure browser sessions, conversation history, mess
 
 The LLM proxy API owns tool calls, MCP integration, model routing, token accounting, provider access, and related policy enforcement.
 
+## CLI-First Backend Plan
+
+The CLI is the first implementation target because it can exercise backend behavior without browser sessions, OAuth/OIDC, templates, CSRF, SSE, or markdown rendering. It should remain a thin Go command surface over the same `chat` and `llm` service interfaces that future web handlers will use.
+
+Near-term CLI work should focus on backend-facing behavior:
+
+- Prompt execution through the configured LLM proxy client, with deterministic dummy clients kept for tests.
+- An interactive chat loop that reuses the same service path as one-shot prompts.
+- Model and option flags that are forwarded to the proxy contract, without implementing provider routing locally.
+- Conversation continuation and logs/history once durable application state exists.
+- Clear streaming and non-streaming boundaries, with browser delivery still planned as SSE later.
+- Usage and response metadata display when the proxy exposes it.
+
+The `simonw/llm` reference is useful for CLI product shape: prompt defaults, `chat` interaction, multi-line input, model selection, options, conversation continuation, logs, token usage display, fragments, schemas, and tool-call visibility. This project should not copy its Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration. The Go app remains a BFF for the LLM proxy, and the proxy remains responsible for providers, tools, MCP execution, routing, and token accounting.
+
 ## References
 
 Miniflux is the primary implementation-shape reference for a small, serious Go web app with server-rendered UI, Postgres state, migrations, configuration, packaging, tests, and OAuth/OIDC support.
@@ -38,3 +53,5 @@ Gitea is a mature Go web app reference for auth, sessions, CSRF, external auth p
 Grafana is a targeted enterprise OAuth/OIDC reference for generic provider configuration, claim mapping, role/group mapping, token refresh, and IdP edge cases. It is not a general architecture template.
 
 LibreChat is included as a mature LLM chat product and UX reference. Use it to study conversation behavior, streaming response UX, message rendering, provider/model concepts, and configuration boundaries. This project is intentionally not trying to replicate LibreChat's Node/React SPA implementation stack.
+
+LLM is included as a mature LLM CLI reference. Use it to study one-shot prompts, interactive chat behavior, continuation semantics, logging, model/options command design, and backend-testable LLM workflows. This project is intentionally not trying to replicate LLM's Python package, plugin ecosystem, or provider orchestration.

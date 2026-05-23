@@ -43,6 +43,7 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Gitea is a mature Go web app reference for auth/session handling, CSRF, external auth provider modeling, user creation and account linking from external identity, per-request authorization checks, and handler/integration test organization.
 - Grafana is only a targeted reference for enterprise OAuth/OIDC edge cases, including generic OAuth configuration, claim mapping, role/group mapping, token refresh, and session lifetime patterns. Do not use Grafana as a general architecture template.
 - LibreChat is a product and behavior reference for mature LLM chat UX. Use it to understand conversation list behavior, message lifecycle, streaming response UX, multi-model/provider concepts, file/image/message rendering patterns, and admin/configuration concepts worth avoiding or simplifying. Do not copy LibreChat's frontend architecture. This project intentionally avoids a Node/React SPA architecture for now.
+- LLM is a CLI behavior reference for LLM prompt and chat workflows. Use it to understand command ergonomics, interactive chat loops, model/options UX, conversation continuation, prompt/response logging, usage metadata, fragments, schemas, and tool-call visibility. Do not copy LLM's Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration.
 
 ## Coding Standards
 
@@ -53,6 +54,7 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Format all Go code with `gofmt` and `goimports`.
 - Keep generated artifacts, coverage files, binaries, local tools, and temporary files out of Git.
 - Preserve clear package boundaries. Avoid adding abstractions before there is concrete duplication or complexity to remove.
+- When a turn changes repository files, end the turn by committing the agent's changes unless explicitly instructed otherwise. Keep unrelated user changes out of the commit.
 
 ## Testing Standards
 

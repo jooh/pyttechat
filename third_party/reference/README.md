@@ -23,3 +23,10 @@ These submodules are read-only design references. Do not copy their code into th
 - Useful for studying conversation UX, streaming response behavior, message rendering, provider/model configuration, and feature boundaries.
 - Not an implementation architecture reference for this project.
 - Do not introduce Node, React, or SPA machinery merely because LibreChat uses it.
+
+## LLM
+
+- CLI behavior reference for LLM prompt and chat workflows.
+- Useful for studying command ergonomics, interactive chat loops, conversation continuation, model/options UX, prompt and response logging, usage metadata, fragments, schemas, and tool-call visibility.
+- Not an implementation architecture reference for this Go app.
+- Do not copy Python code, adopt its plugin runtime, or add Python dependencies merely because LLM uses them.

@@ -14,3 +14,7 @@
 	path = third_party/reference/librechat
 	url = https://github.com/danny-avila/LibreChat.git
 	shallow = true
+[submodule "third_party/reference/llm"]
+	path = third_party/reference/llm
+	url = https://github.com/simonw/llm.git
+	shallow = true
