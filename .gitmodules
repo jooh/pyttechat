@@ -1,0 +1,16 @@
+[submodule "third_party/reference/miniflux"]
+	path = third_party/reference/miniflux
+	url = https://github.com/miniflux/v2.git
+	shallow = true
+[submodule "third_party/reference/gitea"]
+	path = third_party/reference/gitea
+	url = https://github.com/go-gitea/gitea.git
+	shallow = true
+[submodule "third_party/reference/grafana"]
+	path = third_party/reference/grafana
+	url = https://github.com/grafana/grafana.git
+	shallow = true
+[submodule "third_party/reference/librechat"]
+	path = third_party/reference/librechat
+	url = https://github.com/danny-avila/LibreChat.git
+	shallow = true

@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fmt-check
+        name: gofmt check
+        entry: make fmt-check
+        language: system
+        pass_filenames: false
+      - id: tidy-check
+        name: go mod tidy check
+        entry: make tidy-check
+        language: system
+        pass_filenames: false
+      - id: lint-fast
+        name: fast Go lint
+        entry: make lint-fast
+        language: system
+        pass_filenames: false
+      - id: test
+        name: Go unit tests
+        entry: make test
+        language: system
+        pass_filenames: false
