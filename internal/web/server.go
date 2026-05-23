@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -210,7 +211,7 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	replay, updates, terminal := turn.subscribe()
+	replay, updates, terminal := turn.subscribe(lastEventID(r))
 	if updates != nil {
 		defer turn.unsubscribe(updates)
 	}
@@ -367,6 +368,11 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, event streamEvent) error {
+	if event.ID > 0 {
+		if _, err := fmt.Fprintf(w, "id: %d\n", event.ID); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(w, "event: %s\n", event.Name); err != nil {
 		return err
 	}
@@ -375,6 +381,18 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, event streamEvent) er
 	}
 	flusher.Flush()
 	return nil
+}
+
+func lastEventID(r *http.Request) int64 {
+	value := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	if value == "" {
+		return 0
+	}
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id < 0 {
+		return 0
+	}
+	return id
 }
 
 func randomID(prefix string) (string, error) {
@@ -386,6 +404,7 @@ func randomID(prefix string) (string, error) {
 }
 
 type streamEvent struct {
+	ID   int64
 	Name string
 	Data []byte
 }
@@ -400,6 +419,7 @@ type turnJob struct {
 
 	mu             sync.Mutex
 	events         []streamEvent
+	nextEventID    int64
 	subscribers    map[chan streamEvent]struct{}
 	terminal       bool
 	abortRequested bool
@@ -506,24 +526,31 @@ func (j *turnJob) emit(name string, payload any) {
 		data = []byte(`{"message":"could not encode stream event"}`)
 	}
 
-	event := streamEvent{Name: name, Data: data}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	j.nextEventID++
+	event := streamEvent{ID: j.nextEventID, Name: name, Data: data}
 	j.events = append(j.events, event)
 	for subscriber := range j.subscribers {
 		select {
 		case subscriber <- event:
 		default:
+			close(subscriber)
+			delete(j.subscribers, subscriber)
 		}
 	}
 }
 
-func (j *turnJob) subscribe() ([]streamEvent, chan streamEvent, bool) {
+func (j *turnJob) subscribe(lastSeenID int64) ([]streamEvent, chan streamEvent, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	replay := append([]streamEvent(nil), j.events...)
+	start := 0
+	for start < len(j.events) && j.events[start].ID <= lastSeenID {
+		start++
+	}
+	replay := append([]streamEvent(nil), j.events[start:]...)
 	if j.terminal {
 		return replay, nil, true
 	}

@@ -12,7 +12,7 @@ In addition to the web app, we also implement a LLM chat CLI. The purpose of the
 - Do not add OAuth/OIDC flows yet.
 - Do not add Postgres schema or migrations yet.
 - Do not add conversation, message, user, or session persistence yet.
-- Do not add SSE streaming yet.
+- Do not add WebSocket chat streaming unless requirements justify it over Server-Sent Events.
 - Do not add markdown rendering yet.
 - Do not add an admin UI or provider configuration UI yet.
 - Do not introduce a Node toolchain unless explicitly approved later.
@@ -33,7 +33,7 @@ The browser must not call the LLM proxy directly. The browser must not store OAu
 
 Future authentication should use OAuth/OIDC Authorization Code with PKCE. The app should issue secure server-side sessions through `HttpOnly`, `Secure`, `SameSite` cookies. OAuth tokens should be stored and refreshed server-side. When calling the LLM proxy, the app should forward the user's access token with `Authorization: Bearer`.
 
-Future LLM streaming from the app to the browser should use Server-Sent Events unless requirements justify WebSockets. Postgres should be used for durable application state.
+LLM streaming from the app to the browser uses Server-Sent Events unless future requirements justify WebSockets. Postgres should be used for durable application state.
 
 ## Reference Implementation Guide
 
@@ -70,7 +70,7 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Tests must be deterministic and must not depend on external network.
 - Add tests with production behavior. Do not leave security-sensitive behavior covered only by manual checks.
 - Integration tests that require services should eventually use `testcontainers-go` or an equivalent controlled harness.
-- Future tests should cover OIDC callbacks with fake IdP/JWKS, secure session cookie attributes, CSRF enforcement, per-user conversation authorization, message persistence, LLM proxy JWT pass-through, SSE streaming, cancellation on client disconnect, upstream timeout/error mapping, markdown sanitization, migration behavior against real Postgres, and minimal browser smoke coverage.
+- Future tests should cover OIDC callbacks with fake IdP/JWKS, secure session cookie attributes, CSRF enforcement, per-user conversation authorization, message persistence, LLM proxy JWT pass-through, cancellation on client disconnect, upstream timeout/error mapping, markdown sanitization, migration behavior against real Postgres, and minimal browser smoke coverage. Current SSE behavior should stay covered by deterministic tests.
 
 ## Security Standards
 
@@ -99,5 +99,5 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Use server-rendered HTML.
 - Use modern plain JavaScript only where needed.
 - Avoid bundlers and package-manager-driven frontend pipelines unless explicitly approved later.
-- Future browser JavaScript should stay small and focused on `EventSource`, markdown rendering, copy buttons, and scroll behavior.
+- Browser JavaScript should stay small and focused on `EventSource`, markdown rendering, copy buttons, and scroll behavior.
 - Do not implement complex client-side state management unless future requirements force it.

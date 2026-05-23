@@ -8,6 +8,7 @@
 
   let currentTurn = null;
   let currentSource = null;
+  let streamErrorTimer = null;
 
   function nearBottom() {
     return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 96;
@@ -77,7 +78,15 @@
     }
   }
 
+  function clearStreamErrorTimer() {
+    if (streamErrorTimer) {
+      clearTimeout(streamErrorTimer);
+      streamErrorTimer = null;
+    }
+  }
+
   function finishTurn() {
+    clearStreamErrorTimer();
     closeSource();
     currentTurn = null;
     setSubmitting(false);
@@ -108,34 +117,54 @@
     currentTurn = turn;
     currentSource = new EventSource(turn.stream_url);
 
+    currentSource.onopen = function () {
+      clearStreamErrorTimer();
+    };
+
     currentSource.addEventListener('text', function (event) {
+      clearStreamErrorTimer();
       const data = JSON.parse(event.data);
       assistant.text.textContent += data.delta || '';
       scrollToBottom(false);
     });
 
     currentSource.addEventListener('reasoning', function (event) {
+      clearStreamErrorTimer();
       const data = JSON.parse(event.data);
       ensureReasoning(assistant.article).textContent += data.delta || '';
       scrollToBottom(false);
     });
 
     currentSource.addEventListener('done', function () {
+      clearStreamErrorTimer();
       finishTurn();
     });
 
     currentSource.addEventListener('aborted', function () {
+      clearStreamErrorTimer();
       finishTurn();
     });
 
     currentSource.addEventListener('stream-error', function (event) {
+      clearStreamErrorTimer();
       const data = JSON.parse(event.data);
       assistant.article.classList.add('message-error');
       assistant.text.textContent = data.message || 'The response stream failed.';
       finishTurn();
     });
 
-    currentSource.onerror = function () {};
+    currentSource.onerror = function () {
+      if (streamErrorTimer || !currentTurn) {
+        return;
+      }
+      streamErrorTimer = setTimeout(function () {
+        assistant.article.classList.add('message-error');
+        if (!assistant.text.textContent) {
+          assistant.text.textContent = 'The response stream disconnected.';
+        }
+        finishTurn();
+      }, 10000);
+    };
   }
 
   form.addEventListener('submit', async function (event) {

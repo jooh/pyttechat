@@ -91,11 +91,12 @@ func TestCreateTurnRejectsEmptyPrompt(t *testing.T) {
 }
 
 func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
+	llmClient := dummy.NewClient(dummy.Turn{
+		ReasoningChunks: []string{"think"},
+		TextChunks:      []string{"hel", "lo"},
+	})
 	server := httptest.NewServer(NewServer(Options{
-		Client: dummy.NewClient(dummy.Turn{
-			ReasoningChunks: []string{"think"},
-			TextChunks:      []string{"hel", "lo"},
-		}),
+		Client:          llmClient,
 		Model:           "test-model",
 		ReasoningEffort: "medium",
 	}))
@@ -125,6 +126,17 @@ func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	if !hasFrame(frames, "done", `"response_id":"dummy-response-1"`) {
 		t.Fatalf("SSE frames = %#v, want done frame", frames)
 	}
+
+	requests := llmClient.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if requests[0].Model != "test-model" {
+		t.Fatalf("request model = %q, want test-model", requests[0].Model)
+	}
+	if requests[0].Reasoning.Effort != "medium" || requests[0].Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning = %#v, want medium effort with auto summary", requests[0].Reasoning)
+	}
 }
 
 func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
@@ -152,6 +164,9 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	if frame.Event != "text" {
 		t.Fatalf("first frame = %#v, want text", frame)
 	}
+	if frame.ID == "" {
+		t.Fatalf("first frame = %#v, want event id", frame)
+	}
 	if err := response.Body.Close(); err != nil {
 		t.Fatalf("closing subscriber body: %v", err)
 	}
@@ -165,13 +180,64 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
 	close(llmClient.events)
 
-	response, body := get(t, client, server.URL+turn.StreamURL)
+	request, err := http.NewRequest(http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest replay error = %v", err)
+	}
+	request.Header.Set("Last-Event-ID", frame.ID)
+	response, body := do(t, client, request)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("replay status = %d, want 200; body = %q", response.StatusCode, body)
 	}
-	if !hasFrame(parseSSE(t, body), "done", `"response_id":"resp_done"`) {
+	frames := parseSSE(t, body)
+	if hasFrame(frames, "text", `"delta":"partial"`) {
+		t.Fatalf("replay body = %q, did not expect already acknowledged text event", body)
+	}
+	if !hasFrame(frames, "done", `"response_id":"resp_done"`) {
 		t.Fatalf("replay body = %q, want done event after disconnected subscriber", body)
+	}
+}
+
+func TestTurnJobDisconnectsSlowSubscriberWithoutLosingReplay(t *testing.T) {
+	turn, err := newTurnJob("hello")
+	if err != nil {
+		t.Fatalf("newTurnJob error = %v", err)
+	}
+	_, updates, terminal := turn.subscribe(0)
+	if terminal {
+		t.Fatalf("new turn is terminal")
+	}
+
+	for i := 0; i < 130; i++ {
+		turn.emit("text", deltaEvent{
+			TurnID:             turn.id,
+			AssistantMessageID: turn.assistantMessageID,
+			Delta:              itoa(i),
+		})
+	}
+
+	turn.mu.Lock()
+	subscriberCount := len(turn.subscribers)
+	turn.mu.Unlock()
+	if subscriberCount != 0 {
+		t.Fatalf("subscriber count = %d, want slow subscriber disconnected", subscriberCount)
+	}
+	turn.unsubscribe(updates)
+
+	replay, replayUpdates, replayTerminal := turn.subscribe(0)
+	if replayUpdates == nil {
+		t.Fatalf("replay subscriber channel is nil")
+	}
+	defer turn.unsubscribe(replayUpdates)
+	if replayTerminal {
+		t.Fatalf("turn unexpectedly terminal")
+	}
+	if len(replay) != 130 {
+		t.Fatalf("replay event count = %d, want all emitted events", len(replay))
+	}
+	if string(replay[129].Data) == "" || replay[129].ID == 0 {
+		t.Fatalf("last replay event = %#v, want encoded event with id", replay[129])
 	}
 }
 
@@ -368,6 +434,7 @@ func csrfFromHTML(t *testing.T, body string) string {
 }
 
 type sseFrame struct {
+	ID    string
 	Event string
 	Data  string
 }
@@ -384,6 +451,8 @@ func parseSSE(t *testing.T, body string) []sseFrame {
 		var frame sseFrame
 		for _, line := range strings.Split(raw, "\n") {
 			switch {
+			case strings.HasPrefix(line, "id: "):
+				frame.ID = strings.TrimPrefix(line, "id: ")
 			case strings.HasPrefix(line, "event: "):
 				frame.Event = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):

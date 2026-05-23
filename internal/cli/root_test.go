@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
 )
@@ -189,6 +192,71 @@ func TestServeCommandHelpShowsWebOptions(t *testing.T) {
 	}
 }
 
+func TestServeCommandStartsWebHandler(t *testing.T) {
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- Execute(ctx, []string{"serve", "--addr", "127.0.0.1:0", "--secure-cookies"}, strings.NewReader(""), &stdout, stderr)
+	}()
+
+	addr := waitForListenAddr(t, stderr)
+	client := &http.Client{Timeout: time.Second}
+	response, err := client.Get("http://" + addr + "/")
+	if err != nil {
+		t.Fatalf("GET / error = %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+	cookies := response.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie count = %d, want 1", len(cookies))
+	}
+	if !cookies[0].Secure {
+		t.Fatalf("session cookie Secure = false, want true when --secure-cookies is set")
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("serve exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("serve command did not stop after context cancellation")
+	}
+}
+
+func TestServeCommandReportsBindFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen error = %v", err)
+	}
+	defer listener.Close()
+
+	code, _, stderr := runCommand(t, "", "serve", "--addr", listener.Addr().String())
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "listen") {
+		t.Fatalf("stderr = %q, want listen failure", stderr)
+	}
+}
+
 func TestNoArgsPrintsHelp(t *testing.T) {
 	code, stdout, stderr := runCommand(t, "")
 
@@ -199,4 +267,43 @@ func TestNoArgsPrintsHelp(t *testing.T) {
 	if !strings.Contains(stdout, "Minimal LLM chat backend CLI") {
 		t.Fatalf("stdout = %q, want help text", stdout)
 	}
+}
+
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForListenAddr(t *testing.T, stderr *safeBuffer) string {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		output := stderr.String()
+		const prefix = "pyttechat web listening on "
+		if index := strings.LastIndex(output, prefix); index >= 0 {
+			line := strings.TrimSpace(output[index+len(prefix):])
+			if newline := strings.IndexByte(line, '\n'); newline >= 0 {
+				line = line[:newline]
+			}
+			if line != "" {
+				return line
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("serve command did not report a listen address; stderr = %q", stderr.String())
+	return ""
 }

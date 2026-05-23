@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"example.com/llm-chat-web/internal/buildinfo"
@@ -74,7 +76,7 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 		Short: "Start the web chat server",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			handler := web.NewServer(web.Options{
@@ -88,13 +90,18 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				Handler:           handler,
 				ReadHeaderTimeout: 5 * time.Second,
 			}
+			listener, err := net.Listen("tcp", opts.webAddr)
+			if err != nil {
+				return err
+			}
+			defer listener.Close()
 
 			errc := make(chan error, 1)
 			go func() {
-				errc <- server.ListenAndServe()
+				errc <- server.Serve(listener)
 			}()
 
-			fmt.Fprintf(stderr, "pyttechat web listening on %s\n", opts.webAddr)
+			fmt.Fprintf(stderr, "pyttechat web listening on %s\n", listener.Addr().String())
 			select {
 			case <-ctx.Done():
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
