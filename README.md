@@ -1,8 +1,8 @@
-# LLM Chat Web
+# Pyttechat
 
 Minimal Go scaffold for a server-rendered LLM chat web app. The app is intended to act as a Backend for Frontend between a browser chat UI and an enterprise LLM proxy API.
 
-Status: scaffold only. This repository does not implement the chat application yet.
+Status: early backend POC. The repository currently has a small `pyttechat` CLI with a dummy LLM implementation. It does not implement the web chat application yet.
 
 ## Quick Start
 
@@ -22,10 +22,17 @@ mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
 go test ./...
 ```
 
-The placeholder command currently prints build information:
+Build the CLI and inspect build information:
 
 ```sh
-./bin/chat-web
+make build
+./bin/pyttechat version
+```
+
+Send a prompt to the dummy LLM:
+
+```sh
+./bin/pyttechat ask "hello"
 ```
 
 ## Pre-Commit

@@ -33,7 +33,7 @@ GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
 
-GO_FILES := $(shell find . -path './third_party' -prune -o -name '*.go' -print)
+GO_FILES := $(shell find . \( -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
@@ -60,7 +60,7 @@ help:
 		'  vuln          Run govulncheck.' \
 		'  security      Run gosec.' \
 		'  deadcode      Run deadcode as an advisory check.' \
-		'  build         Build bin/chat-web.' \
+		'  build         Build bin/pyttechat.' \
 		'  clean         Remove local build and coverage artifacts.' \
 		'  pre-commit    Run all configured pre-commit hooks.' \
 		'  ci            Run PR-quality checks.'
@@ -150,7 +150,7 @@ deadcode: cache-dirs $(DEADCODE)
 
 build: cache-dirs
 	mkdir -p $(BUILD_DIR)
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/chat-web ./cmd/chat-web
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/pyttechat ./cmd/pyttechat
 
 clean:
 	rm -rf $(BUILD_DIR) coverage.out coverage.html *.prof *.test test-results
