@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{.CSRFToken}}">
+    <title>Pyttechat</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <h1>Pyttechat</h1>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite">
+        {{range .Messages}}
+          <article class="message message-{{.Role}}">
+            <div class="message-label">{{.Role}}</div>
+            <div class="message-text">{{.Text}}</div>
+          </article>
+        {{else}}
+          <article class="message message-empty">
+            <div class="message-text">Start a conversation.</div>
+          </article>
+        {{end}}
+      </section>
+
+      <form id="chat-form" class="composer">
+        <label class="sr-only" for="prompt">Message</label>
+        <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
+        <button id="stop-button" class="secondary" type="button" disabled>Stop</button>
+        <button id="send-button" type="submit">Send</button>
+      </form>
+    </main>
+  </body>
+</html>

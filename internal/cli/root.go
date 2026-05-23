@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 	"example.com/llm-chat-web/internal/llm/openresponses"
+	"example.com/llm-chat-web/internal/web"
 
 	"github.com/spf13/cobra"
 )
@@ -25,14 +28,18 @@ type rootOptions struct {
 	model           string
 	reasoningEffort string
 	proxyTimeout    time.Duration
+	webAddr         string
+	secureCookies   bool
 }
 
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	opts := rootOptions{
-		proxyURL:     os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
-		proxyToken:   os.Getenv("PYTTECHAT_LLM_PROXY_TOKEN"),
-		model:        os.Getenv("PYTTECHAT_MODEL"),
-		proxyTimeout: openresponses.DefaultTimeout,
+		proxyURL:      os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
+		proxyToken:    os.Getenv("PYTTECHAT_LLM_PROXY_TOKEN"),
+		model:         os.Getenv("PYTTECHAT_MODEL"),
+		proxyTimeout:  openresponses.DefaultTimeout,
+		webAddr:       envString("PYTTECHAT_WEB_ADDR", ":3000"),
+		secureCookies: envBool("PYTTECHAT_SECURE_COOKIES"),
 	}
 	if value := os.Getenv("PYTTECHAT_LLM_PROXY_TIMEOUT"); value != "" {
 		if timeout, err := time.ParseDuration(value); err == nil && timeout > 0 {
@@ -55,9 +62,60 @@ func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 
 	rootCmd.AddCommand(newAskCommand(stdout, stderr, &opts))
 	rootCmd.AddCommand(newChatCommand(stdin, stdout, stderr, &opts))
+	rootCmd.AddCommand(newServeCommand(stdout, stderr, &opts))
 	rootCmd.AddCommand(newVersionCommand(stdout))
 
 	return rootCmd
+}
+
+func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the web chat server",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+
+			handler := web.NewServer(web.Options{
+				Client:          newLLMClient(*opts),
+				Model:           opts.model,
+				ReasoningEffort: opts.reasoningEffort,
+				CookieSecure:    opts.secureCookies,
+			})
+			server := &http.Server{
+				Addr:              opts.webAddr,
+				Handler:           handler,
+				ReadHeaderTimeout: 5 * time.Second,
+			}
+
+			errc := make(chan error, 1)
+			go func() {
+				errc <- server.ListenAndServe()
+			}()
+
+			fmt.Fprintf(stderr, "pyttechat web listening on %s\n", opts.webAddr)
+			select {
+			case <-ctx.Done():
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := server.Shutdown(shutdownCtx); err != nil {
+					return err
+				}
+				return nil
+			case err := <-errc:
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
+					return err
+				}
+				return nil
+			}
+		},
+	}
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	command.Flags().StringVar(&opts.webAddr, "addr", opts.webAddr, "HTTP listen address")
+	command.Flags().BoolVar(&opts.secureCookies, "secure-cookies", opts.secureCookies, "set the Secure attribute on browser session cookies")
+	return command
 }
 
 func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
@@ -125,6 +183,22 @@ func newLLMClient(opts rootOptions) llm.Client {
 		})
 	}
 	return dummy.NewClient()
+}
+
+func envString(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {

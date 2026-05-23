@@ -19,6 +19,8 @@ func runCommand(t *testing.T, stdin string, args ...string) (int, string, string
 	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
 	t.Setenv("PYTTECHAT_MODEL", "")
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -170,6 +172,20 @@ func TestVersionCommandPrintsBuildInfo(t *testing.T) {
 	want := "version=dev commit=unknown date=unknown\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestServeCommandHelpShowsWebOptions(t *testing.T) {
+	code, stdout, stderr := runCommand(t, "", "serve", "--help")
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Start the web chat server") {
+		t.Fatalf("stdout = %q, want serve command help", stdout)
+	}
+	if !strings.Contains(stdout, "--addr") {
+		t.Fatalf("stdout = %q, want listen address option", stdout)
 	}
 }
 

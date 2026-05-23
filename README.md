@@ -2,7 +2,7 @@
 
 Minimal Go scaffold for a server-rendered LLM chat web app. The app is intended to act as a Backend for Frontend between a browser chat UI and an enterprise LLM proxy API.
 
-Status: early backend POC. The repository currently has a streaming `pyttechat` CLI with a dummy LLM implementation and an OpenResponses-compatible proxy client. It does not implement the web chat application yet.
+Status: early backend/web POC. The repository currently has a streaming `pyttechat` CLI, a minimal server-rendered web chat UI, a dummy LLM implementation, and an OpenResponses-compatible proxy client.
 
 ## Quick Start
 
@@ -41,12 +41,24 @@ Start a single ephemeral multi-turn chat session. Each input line is sent as the
 printf 'hello\nagain\n' | ./bin/pyttechat chat
 ```
 
+Start the web chat POC:
+
+```sh
+./bin/pyttechat serve --addr :3000
+```
+
+Then open `http://localhost:3000`. Browser sessions are in memory and reset when the process restarts. A submitted turn starts on the server first, and the browser subscribes to that turn with `EventSource`, so closing the stream subscription does not cancel the upstream request. Use the Stop button to cancel an active turn.
+
 Use an OpenResponses-compatible LLM proxy:
 
 ```sh
 PYTTECHAT_LLM_PROXY_URL=http://localhost:8080 \
 PYTTECHAT_LLM_PROXY_TOKEN=token-value \
   ./bin/pyttechat --model gpt-example chat
+
+PYTTECHAT_LLM_PROXY_URL=http://localhost:8080 \
+PYTTECHAT_LLM_PROXY_TOKEN=token-value \
+  ./bin/pyttechat --model gpt-example serve
 ```
 
 Set `--reasoning-effort` when you want to request model reasoning options. Assistant answer text streams to stdout. Reasoning events, when returned, stream separately to stderr. Proxy requests default to a 5-minute timeout; override it with `--proxy-timeout` or `PYTTECHAT_LLM_PROXY_TIMEOUT`.
