@@ -51,6 +51,26 @@ PYTTECHAT_LLM_PROXY_TOKEN=token-value \
 
 Set `--reasoning-effort` when you want to request model reasoning options. Assistant answer text streams to stdout. Reasoning events, when returned, stream separately to stderr. Proxy requests default to a 5-minute timeout; override it with `--proxy-timeout` or `PYTTECHAT_LLM_PROXY_TIMEOUT`.
 
+## Fake OpenResponses Provider
+
+The repo includes a deterministic fake OpenAI-compatible Responses API provider for tests and local development. Prefer `internal/llm/openresponses/fakeprovider.NewHandler()` in Go tests instead of hand-written happy-path SSE stubs. Keep custom `httptest` handlers for malformed streams, auth assertions, and narrow parser edge cases.
+
+Run the local harness manually:
+
+```sh
+go run ./cmd/fake-responses --addr :8080
+```
+
+Verify the streaming endpoint:
+
+```sh
+curl -N http://localhost:8080/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"dummy-responses","input":"hello world","stream":true}'
+```
+
+Expected: an SSE stream with typed response lifecycle events, text deltas, `response.completed`, and final `data: [DONE]`.
+
 ## Pre-Commit
 
 Install the hooks after cloning:

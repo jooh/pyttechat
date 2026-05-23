@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"example.com/llm-chat-web/internal/llm"
+	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
 )
 
 func TestNewClientSetsDefaultTimeout(t *testing.T) {
@@ -18,6 +19,40 @@ func TestNewClientSetsDefaultTimeout(t *testing.T) {
 
 	if client.httpClient.Timeout <= 0 {
 		t.Fatalf("http client timeout = %s, want bounded default timeout", client.httpClient.Timeout)
+	}
+}
+
+func TestClientStreamsFromFakeProvider(t *testing.T) {
+	server := httptest.NewServer(fakeprovider.NewHandler())
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Model:    "dummy-responses",
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	var text string
+	var completed llm.Event
+	for _, event := range events {
+		switch event.Type {
+		case llm.EventTextDelta:
+			text += event.Delta
+		case llm.EventCompleted:
+			completed = event
+		}
+	}
+	if text != "Echo: hello" {
+		t.Fatalf("streamed text = %q, want fake provider echo", text)
+	}
+	if completed.ResponseID == "" {
+		t.Fatalf("completed response id is empty")
+	}
+	if completed.Usage == nil || completed.Usage.TotalTokens == 0 {
+		t.Fatalf("completed usage = %#v, want deterministic usage", completed.Usage)
 	}
 }
 
