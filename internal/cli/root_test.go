@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -241,6 +242,111 @@ func TestServeCommandStartsWebHandler(t *testing.T) {
 	}
 }
 
+func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "proxy-token")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+
+	var proxyMu sync.Mutex
+	var proxyAuth []string
+	var proxyBodies []map[string]any
+	fakeProxy := fakeprovider.NewHandler()
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll proxy request body error = %v", err)
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(rawBody))
+
+		var body map[string]any
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			t.Errorf("Decode proxy request body error = %v", err)
+			http.Error(w, "decode error", http.StatusBadRequest)
+			return
+		}
+
+		proxyMu.Lock()
+		proxyAuth = append(proxyAuth, r.Header.Get("Authorization"))
+		proxyBodies = append(proxyBodies, body)
+		proxyMu.Unlock()
+
+		fakeProxy.ServeHTTP(w, r)
+	}))
+	defer proxyServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- Execute(ctx, []string{
+			"--proxy-url", proxyServer.URL,
+			"--model", "served-model",
+			"--reasoning-effort", "medium",
+			"serve",
+			"--addr", "127.0.0.1:0",
+		}, strings.NewReader(""), &stdout, stderr)
+	}()
+	defer stopServeCommand(t, cancel, done, stderr)
+
+	addr := waitForListenAddr(t, stderr)
+	client := newCookieClient(t)
+	baseURL := "http://" + addr
+	csrfToken := fetchServedCSRFToken(t, client, baseURL)
+	turn := createServedTurn(t, client, baseURL, csrfToken, "hello from browser")
+
+	eventsResponse, eventsBody := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+turn.StreamURL, nil))
+	defer eventsResponse.Body.Close()
+	if eventsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("GET turn events status = %d, want 200; body = %q", eventsResponse.StatusCode, eventsBody)
+	}
+	if got := eventsResponse.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("GET turn events Content-Type = %q, want text/event-stream", got)
+	}
+	if got := textFromServedSSE(t, eventsBody); got != "Echo: hello from browser" {
+		t.Fatalf("streamed text = %q, want fake proxy echo", got)
+	}
+	if len(servedSSEData(t, eventsBody, "done")) == 0 {
+		t.Fatalf("SSE body = %q, want done event", eventsBody)
+	}
+
+	proxyMu.Lock()
+	auth := append([]string(nil), proxyAuth...)
+	bodies := append([]map[string]any(nil), proxyBodies...)
+	proxyMu.Unlock()
+	if len(auth) != 1 || len(bodies) != 1 {
+		t.Fatalf("proxy request count = auth:%d bodies:%d, want 1 each", len(auth), len(bodies))
+	}
+	if auth[0] != "Bearer proxy-token" {
+		t.Fatalf("Authorization header = %q, want proxy bearer token", auth[0])
+	}
+
+	body := bodies[0]
+	if body["model"] != "served-model" {
+		t.Fatalf("proxy request model = %v, want served-model", body["model"])
+	}
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("proxy request reasoning = %#v, want object", body["reasoning"])
+	}
+	if reasoning["summary"] != "auto" || reasoning["effort"] != "medium" {
+		t.Fatalf("proxy request reasoning = %#v, want summary auto and effort medium", reasoning)
+	}
+	input := body["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("proxy request input = %#v, want one browser user message", input)
+	}
+	message := input[0].(map[string]any)
+	if message["role"] != "user" || message["content"] != "hello from browser" {
+		t.Fatalf("proxy request input message = %#v, want submitted browser prompt", message)
+	}
+}
+
 func TestServeCommandReportsBindFailure(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -306,4 +412,163 @@ func waitForListenAddr(t *testing.T, stderr *safeBuffer) string {
 	}
 	t.Fatalf("serve command did not report a listen address; stderr = %q", stderr.String())
 	return ""
+}
+
+type servedTurnResponse struct {
+	TurnID             string `json:"turn_id"`
+	UserMessageID      string `json:"user_message_id"`
+	AssistantMessageID string `json:"assistant_message_id"`
+	StreamURL          string `json:"stream_url"`
+}
+
+func stopServeCommand(t *testing.T, cancel context.CancelFunc, done <-chan int, stderr *safeBuffer) {
+	t.Helper()
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("serve exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("serve command did not stop after context cancellation")
+	}
+}
+
+func newCookieClient(t *testing.T) *http.Client {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error = %v", err)
+	}
+	return &http.Client{
+		Jar:     jar,
+		Timeout: 2 * time.Second,
+	}
+}
+
+func fetchServedCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+
+	response, body := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+"/", nil))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	token := csrfFromServedHTML(body)
+	if token == "" {
+		t.Fatalf("CSRF token is empty in body %q", body)
+	}
+	return token
+}
+
+func createServedTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt string) servedTurnResponse {
+	t.Helper()
+
+	request := newServedRequest(t, http.MethodPost, baseURL+"/chat/turns", map[string]string{
+		"prompt": prompt,
+	})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response, body := doServedRequest(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /chat/turns status = %d, want 201; body = %q", response.StatusCode, body)
+	}
+
+	var payload servedTurnResponse
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode turn response error = %v; body = %q", err, body)
+	}
+	if payload.TurnID == "" || payload.UserMessageID == "" || payload.AssistantMessageID == "" || payload.StreamURL == "" {
+		t.Fatalf("turn response = %#v, want stable ids and stream URL", payload)
+	}
+	return payload
+}
+
+func newServedRequest(t *testing.T, method, url string, payload any) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	if payload != nil {
+		if err := json.NewEncoder(&body).Encode(payload); err != nil {
+			t.Fatalf("Encode request body error = %v", err)
+		}
+	}
+	request, err := http.NewRequest(method, url, &body)
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	return request
+}
+
+func doServedRequest(t *testing.T, client *http.Client, request *http.Request) (*http.Response, string) {
+	t.Helper()
+
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s error = %v", request.Method, request.URL, err)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		response.Body.Close()
+		t.Fatalf("ReadAll response body error = %v", err)
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	return response, string(body)
+}
+
+func csrfFromServedHTML(body string) string {
+	const prefix = `<meta name="csrf-token" content="`
+	start := strings.Index(body, prefix)
+	if start < 0 {
+		return ""
+	}
+	start += len(prefix)
+	end := strings.Index(body[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end]
+}
+
+func textFromServedSSE(t *testing.T, body string) string {
+	t.Helper()
+
+	var text strings.Builder
+	for _, data := range servedSSEData(t, body, "text") {
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("decode text SSE data error = %v; data = %q", err, data)
+		}
+		text.WriteString(payload.Delta)
+	}
+	return text.String()
+}
+
+func servedSSEData(t *testing.T, body, eventName string) []string {
+	t.Helper()
+
+	var matches []string
+	for _, raw := range strings.Split(strings.TrimSpace(body), "\n\n") {
+		var event string
+		var data strings.Builder
+		for _, line := range strings.Split(raw, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data.WriteString(strings.TrimPrefix(line, "data: "))
+			}
+		}
+		if event == eventName {
+			matches = append(matches, data.String())
+		}
+	}
+	return matches
 }
