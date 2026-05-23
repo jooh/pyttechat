@@ -117,6 +117,7 @@ func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	}
 
 	frames := parseSSE(t, body)
+	assertFrameEvents(t, frames, []string{"reasoning", "text", "text", "done"})
 	if !hasFrame(frames, "reasoning", `"delta":"think"`) {
 		t.Fatalf("SSE frames = %#v, want reasoning frame", frames)
 	}
@@ -191,6 +192,7 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 		t.Fatalf("replay status = %d, want 200; body = %q", response.StatusCode, body)
 	}
 	frames := parseSSE(t, body)
+	assertFrameEvents(t, frames, []string{"done"})
 	if hasFrame(frames, "text", `"delta":"partial"`) {
 		t.Fatalf("replay body = %q, did not expect already acknowledged text event", body)
 	}
@@ -284,6 +286,42 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	}
 }
 
+func TestCompletedEventFinishesTurnWithoutWaitingForEOF(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	_ = llmClient.waitForContext(t)
+
+	response, err := client.Get(server.URL + turn.StreamURL)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
+	frame := readSSEFrame(t, bufio.NewReader(response.Body))
+	if frame.Event != "done" {
+		t.Fatalf("completion frame = %#v, want done", frame)
+	}
+
+	next := createTurn(t, client, server.URL, csrfToken, "follow up")
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResponse, abortBody := do(t, client, request)
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+}
+
 func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 	llmClient := &recordingClient{}
 	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
@@ -332,7 +370,10 @@ func testHTTPClient(t *testing.T) *http.Client {
 	if err != nil {
 		t.Fatalf("cookiejar.New error = %v", err)
 	}
-	return &http.Client{Jar: jar}
+	return &http.Client{
+		Jar:     jar,
+		Timeout: 2 * time.Second,
+	}
 }
 
 func fetchCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
@@ -471,6 +512,19 @@ func hasFrame(frames []sseFrame, eventName, dataSubstring string) bool {
 		}
 	}
 	return false
+}
+
+func assertFrameEvents(t *testing.T, frames []sseFrame, want []string) {
+	t.Helper()
+
+	if len(frames) != len(want) {
+		t.Fatalf("SSE event count = %d, want %d; frames = %#v", len(frames), len(want), frames)
+	}
+	for i, eventName := range want {
+		if frames[i].Event != eventName {
+			t.Fatalf("SSE event[%d] = %q, want %q; frames = %#v", i, frames[i].Event, eventName, frames)
+		}
+	}
 }
 
 func readSSEFrame(t *testing.T, reader *bufio.Reader) sseFrame {

@@ -495,6 +495,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				ResponseID:         event.ResponseID,
 				Usage:              event.Usage,
 			})
+			return
 		case llm.EventError:
 			if event.Err != nil {
 				j.emitError(event.Err)
