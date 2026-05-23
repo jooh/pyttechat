@@ -2,9 +2,9 @@
 
 ## Project Goal
 
-Build a minimal server-rendered Go web app that acts as a Backend for Frontend for an LLM chat UI. The browser talks to this app, this app talks to an LLM proxy API, and the proxy owns provider routing, MCP/tool execution, token accounting, and related policy.
+Build a minimal server-rendered Go web app that acts as a Backend for Frontend for an LLM chat UI. The browser talks to this app, this app talks to an LLM proxy API, and the proxy owns provider routing, MCP/tool execution, token accounting, and related policy. This app should only implement core chat front end, and should delegate to the proxy whenever possible.
 
-This repository is currently Step 1 only: foundation, guardrails, reference implementations, build tooling, and documentation.
+In addition to the web app, we also implement a LLM chat CLI. The purpose of the chat CLI is to allow convenient user tests of app behavior. It is crucial that the CLI and the web app use the same back end implementation so these user tests remain valid with respect to the web app.
 
 ## Non-Goals For Now
 
@@ -45,6 +45,12 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - LibreChat is a product and behavior reference for mature LLM chat UX. Use it to understand conversation list behavior, message lifecycle, streaming response UX, multi-model/provider concepts, file/image/message rendering patterns, and admin/configuration concepts worth avoiding or simplifying. Do not copy LibreChat's frontend architecture. This project intentionally avoids a Node/React SPA architecture for now.
 - LLM is a CLI behavior reference for LLM prompt and chat workflows. Use it to understand command ergonomics, interactive chat loops, model/options UX, conversation continuation, prompt/response logging, usage metadata, fragments, schemas, and tool-call visibility. Do not copy LLM's Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration.
 
+## Git strategy
+
+- if on `main`, check out a feature branch with a suitable name before starting work
+- if already on a feature branch, keep committing to that branch
+- When a turn changes repository files, end the turn by committing the agent's changes unless explicitly instructed otherwise. Keep unrelated user changes out of the commit.
+
 ## Coding Standards
 
 - Keep the app server-rendered and minimal.
@@ -54,10 +60,11 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Format all Go code with `gofmt` and `goimports`.
 - Keep generated artifacts, coverage files, binaries, local tools, and temporary files out of Git.
 - Preserve clear package boundaries. Avoid adding abstractions before there is concrete duplication or complexity to remove.
-- When a turn changes repository files, end the turn by committing the agent's changes unless explicitly instructed otherwise. Keep unrelated user changes out of the commit.
 
 ## Testing Standards
 
+- Use red/green TDD for all core functionality
+- It's acceptable to skip TDD for CI/CD, test infrastructure, documentation and other peripheral tooling, but actual app source must always be built with TDD
 - `make test` must run `go test ./...`.
 - Tests must be deterministic and must not depend on external network.
 - Add tests with production behavior. Do not leave security-sensitive behavior covered only by manual checks.
@@ -93,7 +100,3 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - Avoid bundlers and package-manager-driven frontend pipelines unless explicitly approved later.
 - Future browser JavaScript should stay small and focused on `EventSource`, markdown rendering, copy buttons, and scroll behavior.
 - Do not implement complex client-side state management unless future requirements force it.
-
-## What Not To Implement In Step 1
-
-Do not implement chat routes, templates, OAuth/OIDC, sessions, Postgres migrations, conversation persistence, SSE, LLM proxy calls, markdown rendering, admin configuration, Docker packaging, deployment manifests, or browser tests in this step. The current scope is only the repository foundation and a tiny compile-tested Go placeholder.

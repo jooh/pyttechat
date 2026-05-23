@@ -42,8 +42,6 @@ Near-term CLI work should focus on backend-facing behavior:
 - Clear streaming and non-streaming boundaries, with browser delivery still planned as SSE later.
 - Usage and response metadata display when the proxy exposes it.
 
-The `simonw/llm` reference is useful for CLI product shape: prompt defaults, `chat` interaction, multi-line input, model selection, options, conversation continuation, logs, token usage display, fragments, schemas, and tool-call visibility. This project should not copy its Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration. The Go app remains a BFF for the LLM proxy, and the proxy remains responsible for providers, tools, MCP execution, routing, and token accounting.
-
 ## References
 
 Miniflux is the primary implementation-shape reference for a small, serious Go web app with server-rendered UI, Postgres state, migrations, configuration, packaging, tests, and OAuth/OIDC support.
