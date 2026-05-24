@@ -108,6 +108,10 @@ textarea {
   animation: blink 1s steps(2, start) infinite;
 }
 
+.message-complete .message-text:empty::after {
+  content: none;
+}
+
 .reasoning {
   margin-top: 10px;
   color: var(--muted);

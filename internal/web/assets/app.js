@@ -7,6 +7,7 @@
   const stopButton = document.getElementById('stop-button');
 
   let currentTurn = null;
+  let currentUser = null;
   let currentAssistant = null;
   let currentSource = null;
   let streamErrorTimer = null;
@@ -27,6 +28,44 @@
     if (empty) {
       empty.remove();
     }
+  }
+
+  function ensureEmptyState() {
+    if (messages.querySelector('.message')) {
+      return;
+    }
+    const article = document.createElement('article');
+    article.className = 'message message-empty';
+
+    const text = document.createElement('div');
+    text.className = 'message-text';
+    text.textContent = 'Start a conversation.';
+
+    article.append(text);
+    messages.append(article);
+  }
+
+  function removeMessage(message) {
+    if (message && message.article && message.article.parentNode === messages) {
+      message.article.remove();
+      ensureEmptyState();
+    }
+  }
+
+  function discardTurn(user, assistant) {
+    removeMessage(assistant);
+    removeMessage(user);
+  }
+
+  function assistantHasContent(assistant) {
+    if (!assistant) {
+      return false;
+    }
+    if (assistant.text.textContent) {
+      return true;
+    }
+    const reasoning = assistant.article.querySelector('.reasoning-content');
+    return Boolean(reasoning && reasoning.textContent);
   }
 
   function addMessage(role, text) {
@@ -91,6 +130,7 @@
     clearStreamErrorTimer();
     closeSource();
     currentTurn = null;
+    currentUser = null;
     currentAssistant = null;
     abortRequested = false;
     setSubmitting(false);
@@ -150,7 +190,7 @@
     }
   }
 
-  async function abortDisconnectedTurn(turn, assistant) {
+  async function abortDisconnectedTurn(turn, user, assistant) {
     if (currentTurn !== turn) {
       return;
     }
@@ -163,13 +203,14 @@
       return;
     }
     if (currentTurn === turn) {
-      markTurnError(assistant, 'The response stream disconnected.');
+      discardTurn(user, assistant);
       finishTurn();
     }
   }
 
-  function subscribe(turn, assistant) {
+  function subscribe(turn, user, assistant) {
     currentTurn = turn;
+    currentUser = user;
     currentAssistant = assistant;
     abortRequested = false;
     currentSource = new EventSource(turn.stream_url);
@@ -179,6 +220,9 @@
     };
 
     currentSource.addEventListener('text', function (event) {
+      if (currentTurn !== turn) {
+        return;
+      }
       clearStreamErrorTimer();
       const data = JSON.parse(event.data);
       assistant.text.textContent += data.delta || '';
@@ -186,6 +230,9 @@
     });
 
     currentSource.addEventListener('reasoning', function (event) {
+      if (currentTurn !== turn) {
+        return;
+      }
       clearStreamErrorTimer();
       const data = JSON.parse(event.data);
       ensureReasoning(assistant.article).textContent += data.delta || '';
@@ -193,21 +240,32 @@
     });
 
     currentSource.addEventListener('done', function () {
+      if (currentTurn !== turn) {
+        return;
+      }
       clearStreamErrorTimer();
+      assistant.article.classList.add('message-complete');
+      if (!assistantHasContent(assistant)) {
+        removeMessage(assistant);
+      }
       finishTurn();
     });
 
     currentSource.addEventListener('aborted', function () {
+      if (currentTurn !== turn) {
+        return;
+      }
       clearStreamErrorTimer();
+      discardTurn(user, assistant);
       finishTurn();
     });
 
     currentSource.addEventListener('stream-error', function (event) {
+      if (currentTurn !== turn) {
+        return;
+      }
       clearStreamErrorTimer();
-      const data = JSON.parse(event.data);
-      const message = data.message || 'The response stream failed.';
-      markTurnError(assistant, message);
-      assistant.text.textContent = message;
+      discardTurn(user, assistant);
       finishTurn();
     });
 
@@ -217,7 +275,7 @@
       }
       streamErrorTimer = setTimeout(function () {
         streamErrorTimer = null;
-        abortDisconnectedTurn(turn, assistant);
+        abortDisconnectedTurn(turn, user, assistant);
       }, 10000);
     };
   }
@@ -230,18 +288,19 @@
       return;
     }
 
-    addMessage('user', text);
+    const user = addMessage('user', text);
     const assistant = addMessage('assistant', '');
+    currentUser = user;
+    currentAssistant = assistant;
     prompt.value = '';
     setSubmitting(true);
 
     try {
       const turn = await submitPrompt(text);
-      subscribe(turn, assistant);
+      subscribe(turn, user, assistant);
       setSubmitting(true);
     } catch (error) {
-      assistant.article.classList.add('message-error');
-      assistant.text.textContent = 'The message could not be sent.';
+      discardTurn(user, assistant);
       finishTurn();
     }
   });
@@ -254,6 +313,7 @@
     try {
       await requestAbort(turn);
       if (currentTurn === turn) {
+        discardTurn(currentUser, currentAssistant);
         finishTurn();
       }
     } catch (error) {

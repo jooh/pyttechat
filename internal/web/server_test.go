@@ -286,6 +286,51 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	}
 }
 
+func TestAbortResponseWaitsForTurnToReleaseSession(t *testing.T) {
+	llmClient := newAbortBlockingClient()
+	defer llmClient.releaseCanceledStream()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	llmClient.waitForStreamStart(t)
+
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResult := make(chan httpResult, 1)
+	go func() {
+		response, body := do(t, client, request)
+		abortResult <- httpResult{response: response, body: body}
+	}()
+
+	llmClient.waitForCancel(t)
+	select {
+	case result := <-abortResult:
+		result.response.Body.Close()
+		t.Fatalf("abort returned before turn released session; status = %d body = %q", result.response.StatusCode, result.body)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	llmClient.releaseCanceledStream()
+	result := waitHTTPResult(t, abortResult)
+	abortResponse, abortBody := result.response, result.body
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+
+	next := createTurn(t, client, server.URL, csrfToken, "follow up")
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	cleanupResponse, cleanupBody := do(t, client, request)
+	defer cleanupResponse.Body.Close()
+	if cleanupResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", cleanupResponse.StatusCode, cleanupBody)
+	}
+}
+
 func TestCompletedEventFinishesTurnWithoutWaitingForEOF(t *testing.T) {
 	llmClient := newControlledClient()
 	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
@@ -320,6 +365,44 @@ func TestCompletedEventFinishesTurnWithoutWaitingForEOF(t *testing.T) {
 	if abortResponse.StatusCode != http.StatusOK {
 		t.Fatalf("cleanup abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
 	}
+}
+
+func TestTerminalEventAllowsImmediateFollowUpBeforeStreamClose(t *testing.T) {
+	llmClient := newCloseBlockingClient()
+	defer llmClient.unblockClose()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+
+	response, err := client.Get(server.URL + turn.StreamURL)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	frame := readSSEFrame(t, bufio.NewReader(response.Body))
+	if frame.Event != "done" {
+		t.Fatalf("terminal frame = %#v, want done", frame)
+	}
+	llmClient.waitForBlockedClose(t)
+
+	next := createTurn(t, client, server.URL, csrfToken, "follow up")
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResponse, abortBody := do(t, client, request)
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+
+	llmClient.unblockClose()
 }
 
 func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
@@ -361,6 +444,23 @@ type turnResponse struct {
 	UserMessageID      string `json:"user_message_id"`
 	AssistantMessageID string `json:"assistant_message_id"`
 	StreamURL          string `json:"stream_url"`
+}
+
+type httpResult struct {
+	response *http.Response
+	body     string
+}
+
+func waitHTTPResult(t *testing.T, results <-chan httpResult) httpResult {
+	t.Helper()
+
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(time.Second):
+		t.Fatalf("HTTP request did not finish")
+		return httpResult{}
+	}
 }
 
 func testHTTPClient(t *testing.T) *http.Client {
@@ -643,6 +743,173 @@ func (s *recordingStream) Next() (llm.Event, error) {
 }
 
 func (*recordingStream) Close() error {
+	return nil
+}
+
+type abortBlockingClient struct {
+	mu         sync.Mutex
+	streams    int
+	started    chan struct{}
+	cancelSeen chan struct{}
+	release    chan struct{}
+	startOnce  sync.Once
+	cancelOnce sync.Once
+}
+
+func newAbortBlockingClient() *abortBlockingClient {
+	return &abortBlockingClient{
+		started:    make(chan struct{}),
+		cancelSeen: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+}
+
+func (c *abortBlockingClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+	c.mu.Lock()
+	c.streams++
+	streamNumber := c.streams
+	c.mu.Unlock()
+
+	if streamNumber == 1 {
+		c.startOnce.Do(func() {
+			close(c.started)
+		})
+		return &abortBlockingStream{
+			ctx:        ctx,
+			cancelSeen: c.cancelSeen,
+			release:    c.release,
+			cancelOnce: &c.cancelOnce,
+		}, nil
+	}
+	return &controlledStream{ctx: ctx, events: make(chan llm.Event)}, nil
+}
+
+func (c *abortBlockingClient) waitForStreamStart(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-c.started:
+	case <-time.After(time.Second):
+		t.Fatalf("LLM stream was not started")
+	}
+}
+
+func (c *abortBlockingClient) waitForCancel(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-c.cancelSeen:
+	case <-time.After(time.Second):
+		t.Fatalf("LLM stream did not observe cancellation")
+	}
+}
+
+func (c *abortBlockingClient) releaseCanceledStream() {
+	select {
+	case <-c.release:
+	default:
+		close(c.release)
+	}
+}
+
+type abortBlockingStream struct {
+	ctx        context.Context
+	cancelSeen chan struct{}
+	release    chan struct{}
+	cancelOnce *sync.Once
+}
+
+func (s *abortBlockingStream) Next() (llm.Event, error) {
+	<-s.ctx.Done()
+	s.cancelOnce.Do(func() {
+		close(s.cancelSeen)
+	})
+	<-s.release
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (*abortBlockingStream) Close() error {
+	return nil
+}
+
+type closeBlockingClient struct {
+	mu           sync.Mutex
+	streams      int
+	closeStarted chan struct{}
+	closeRelease chan struct{}
+	closeOnce    sync.Once
+}
+
+func newCloseBlockingClient() *closeBlockingClient {
+	return &closeBlockingClient{
+		closeStarted: make(chan struct{}),
+		closeRelease: make(chan struct{}),
+	}
+}
+
+func (c *closeBlockingClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+	c.mu.Lock()
+	c.streams++
+	streamNumber := c.streams
+	c.mu.Unlock()
+
+	if streamNumber == 1 {
+		return &closeBlockingStream{
+			ctx:          ctx,
+			event:        llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"},
+			closeStarted: c.closeStarted,
+			closeRelease: c.closeRelease,
+			closeOnce:    &c.closeOnce,
+		}, nil
+	}
+	return &controlledStream{ctx: ctx, events: make(chan llm.Event)}, nil
+}
+
+func (c *closeBlockingClient) waitForBlockedClose(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-c.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("first stream close did not block")
+	}
+}
+
+func (c *closeBlockingClient) unblockClose() {
+	select {
+	case <-c.closeRelease:
+	default:
+		close(c.closeRelease)
+	}
+}
+
+type closeBlockingStream struct {
+	ctx          context.Context
+	event        llm.Event
+	sent         bool
+	closeStarted chan struct{}
+	closeRelease chan struct{}
+	closeOnce    *sync.Once
+}
+
+func (s *closeBlockingStream) Next() (llm.Event, error) {
+	select {
+	case <-s.ctx.Done():
+		return llm.Event{}, s.ctx.Err()
+	default:
+	}
+	if s.sent {
+		return llm.Event{}, io.EOF
+	}
+	s.sent = true
+	return s.event, nil
+}
+
+func (s *closeBlockingStream) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.closeStarted)
+	})
+	<-s.closeRelease
 	return nil
 }
 

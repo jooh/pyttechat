@@ -256,7 +256,7 @@ func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID 
 		writeJSONError(w, http.StatusNotFound, "turn_not_found", "turn not found")
 		return
 	}
-	if !turn.abort() {
+	if !turn.abort(r.Context()) {
 		writeJSONError(w, http.StatusConflict, "turn_finished", "turn is already finished")
 		return
 	}
@@ -423,6 +423,8 @@ type turnJob struct {
 	subscribers    map[chan streamEvent]struct{}
 	terminal       bool
 	abortRequested bool
+	done           chan struct{}
+	doneClosed     bool
 }
 
 func newTurnJob(prompt string) (*turnJob, error) {
@@ -447,6 +449,7 @@ func newTurnJob(prompt string) (*turnJob, error) {
 		ctx:                ctx,
 		cancel:             cancel,
 		subscribers:        map[chan streamEvent]struct{}{},
+		done:               make(chan struct{}),
 	}, nil
 }
 
@@ -489,7 +492,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 			})
 		case llm.EventCompleted:
 			completed = true
-			j.emit("done", doneEvent{
+			j.emitTerminal("done", doneEvent{
 				TurnID:             j.id,
 				AssistantMessageID: j.assistantMessageID,
 				ResponseID:         event.ResponseID,
@@ -507,13 +510,13 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 
 func (j *turnJob) emitError(err error) {
 	if j.wasAbortRequested() || errors.Is(err, context.Canceled) {
-		j.emit("aborted", abortedEvent{
+		j.emitTerminal("aborted", abortedEvent{
 			TurnID:             j.id,
 			AssistantMessageID: j.assistantMessageID,
 		})
 		return
 	}
-	j.emit("stream-error", errorEvent{
+	j.emitTerminal("stream-error", errorEvent{
 		TurnID:             j.id,
 		AssistantMessageID: j.assistantMessageID,
 		Message:            "The response stream failed.",
@@ -521,14 +524,13 @@ func (j *turnJob) emitError(err error) {
 }
 
 func (j *turnJob) emit(name string, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		name = "stream-error"
-		data = []byte(`{"message":"could not encode stream event"}`)
-	}
+	name, data := encodeStreamEvent(name, payload)
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.terminal {
+		return
+	}
 
 	j.nextEventID++
 	event := streamEvent{ID: j.nextEventID, Name: name, Data: data}
@@ -541,6 +543,37 @@ func (j *turnJob) emit(name string, payload any) {
 			delete(j.subscribers, subscriber)
 		}
 	}
+}
+
+func (j *turnJob) emitTerminal(name string, payload any) {
+	name, data := encodeStreamEvent(name, payload)
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.terminal {
+		return
+	}
+
+	j.nextEventID++
+	event := streamEvent{ID: j.nextEventID, Name: name, Data: data}
+	j.events = append(j.events, event)
+	j.terminal = true
+	for subscriber := range j.subscribers {
+		select {
+		case subscriber <- event:
+		default:
+		}
+		close(subscriber)
+		delete(j.subscribers, subscriber)
+	}
+}
+
+func encodeStreamEvent(name string, payload any) (string, []byte) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "stream-error", []byte(`{"message":"could not encode stream event"}`)
+	}
+	return name, data
 }
 
 func (j *turnJob) subscribe(lastSeenID int64) ([]streamEvent, chan streamEvent, bool) {
@@ -575,26 +608,35 @@ func (j *turnJob) finish() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.terminal {
+	if !j.terminal {
+		j.terminal = true
+		for subscriber := range j.subscribers {
+			close(subscriber)
+			delete(j.subscribers, subscriber)
+		}
+	}
+	if j.doneClosed {
 		return
 	}
-	j.terminal = true
-	for subscriber := range j.subscribers {
-		close(subscriber)
-		delete(j.subscribers, subscriber)
-	}
+	close(j.done)
+	j.doneClosed = true
 }
 
-func (j *turnJob) abort() bool {
+func (j *turnJob) abort(ctx context.Context) bool {
 	j.mu.Lock()
 	if j.terminal {
 		j.mu.Unlock()
 		return false
 	}
 	j.abortRequested = true
+	done := j.done
 	j.mu.Unlock()
 
 	j.cancel()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	return true
 }
 
