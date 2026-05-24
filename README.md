@@ -49,6 +49,16 @@ Start the web chat POC:
 
 Then open `http://localhost:3000`. Browser sessions are in memory and reset when the process restarts. A submitted turn starts on the server first, and the browser subscribes to that turn with `EventSource`, so closing the stream subscription does not cancel the upstream request. Use the Stop button to cancel an active turn.
 
+For local browser checks, the Makefile can run the web server in the background and stop it by PID:
+
+```sh
+make serve-start
+make serve-status
+make serve-stop
+```
+
+Override the default address with `WEB_ADDR=127.0.0.1:3017 make serve-start`.
+
 Use an OpenResponses-compatible LLM proxy:
 
 ```sh

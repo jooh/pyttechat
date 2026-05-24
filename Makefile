@@ -10,6 +10,9 @@ GO_BUILD_CACHE := $(CACHE_DIR)/go-build
 GO_MOD_CACHE := $(CACHE_DIR)/go-mod
 GO_TMP_DIR := $(CACHE_DIR)/tmp
 PRE_COMMIT_CACHE := $(CACHE_DIR)/pre-commit
+WEB_ADDR ?= 127.0.0.1:3000
+WEB_PID_FILE ?= $(CACHE_DIR)/pyttechat-web.pid
+WEB_LOG_FILE ?= $(CACHE_DIR)/pyttechat-web.log
 
 GOCACHE ?= $(GO_BUILD_CACHE)
 GOMODCACHE ?= $(GO_MOD_CACHE)
@@ -40,7 +43,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'example.com/llm-chat-web/internal/buildinfo.Version=$(VERSION)' -X 'example.com/llm-chat-web/internal/buildinfo.Commit=$(COMMIT)' -X 'example.com/llm-chat-web/internal/buildinfo.Date=$(DATE)'
 
-.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build clean pre-commit ci tools
+.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build serve-start serve-stop serve-status serve-restart clean pre-commit ci tools
 
 help:
 	@printf '%s\n' \
@@ -61,6 +64,10 @@ help:
 		'  security      Run gosec.' \
 		'  deadcode      Run deadcode as an advisory check.' \
 		'  build         Build bin/pyttechat.' \
+		'  serve-start   Start local web server in the background.' \
+		'  serve-stop    Stop local web server started by serve-start.' \
+		'  serve-status  Show local web server status.' \
+		'  serve-restart Restart local web server.' \
 		'  clean         Remove local build and coverage artifacts.' \
 		'  pre-commit    Run all configured pre-commit hooks.' \
 		'  ci            Run PR-quality checks.'
@@ -151,6 +158,77 @@ deadcode: cache-dirs $(DEADCODE)
 build: cache-dirs
 	mkdir -p $(BUILD_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/pyttechat ./cmd/pyttechat
+
+serve-start: build cache-dirs
+	@if [ -f "$(WEB_PID_FILE)" ]; then \
+		pid=$$(cat "$(WEB_PID_FILE)"); \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			printf 'pyttechat web already running on http://%s (pid %s)\n' "$(WEB_ADDR)" "$$pid"; \
+			printf 'log: %s\n' "$(WEB_LOG_FILE)"; \
+			exit 0; \
+		fi; \
+		rm -f "$(WEB_PID_FILE)"; \
+	fi; \
+	: > "$(WEB_LOG_FILE)"; \
+	nohup "$(BUILD_DIR)/pyttechat" serve --addr "$(WEB_ADDR)" >"$(WEB_LOG_FILE)" 2>&1 & \
+	pid=$$!; \
+	printf '%s\n' "$$pid" >"$(WEB_PID_FILE)"; \
+	sleep 1; \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
+		printf 'pyttechat web failed to start; see %s\n' "$(WEB_LOG_FILE)"; \
+		rm -f "$(WEB_PID_FILE)"; \
+		exit 1; \
+	fi; \
+	printf 'pyttechat web started on http://%s (pid %s)\n' "$(WEB_ADDR)" "$$pid"; \
+	printf 'log: %s\n' "$(WEB_LOG_FILE)"
+
+serve-stop:
+	@if [ ! -f "$(WEB_PID_FILE)" ]; then \
+		printf 'pyttechat web is not running; no pid file at %s\n' "$(WEB_PID_FILE)"; \
+		exit 0; \
+	fi; \
+	pid=$$(cat "$(WEB_PID_FILE)"); \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
+		printf 'removing stale pid file for stopped process %s\n' "$$pid"; \
+		rm -f "$(WEB_PID_FILE)"; \
+		exit 0; \
+	fi; \
+	command=$$(ps -p "$$pid" -o command= 2>/dev/null || true); \
+	case "$$command" in \
+		*"pyttechat serve"*) ;; \
+		*) \
+			printf 'refusing to stop pid %s; it is not a pyttechat serve process\n' "$$pid"; \
+			printf 'command: %s\n' "$$command"; \
+			exit 1; \
+			;; \
+	esac; \
+	kill "$$pid"; \
+	i=0; \
+	while kill -0 "$$pid" 2>/dev/null; do \
+		if [ "$$i" -ge 5 ]; then \
+			printf 'pyttechat web did not stop after SIGTERM (pid %s)\n' "$$pid"; \
+			exit 1; \
+		fi; \
+		i=$$((i + 1)); \
+		sleep 1; \
+	done; \
+	rm -f "$(WEB_PID_FILE)"; \
+	printf 'pyttechat web stopped (pid %s)\n' "$$pid"
+
+serve-status:
+	@if [ ! -f "$(WEB_PID_FILE)" ]; then \
+		printf 'pyttechat web is not running; no pid file at %s\n' "$(WEB_PID_FILE)"; \
+		exit 0; \
+	fi; \
+	pid=$$(cat "$(WEB_PID_FILE)"); \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		printf 'pyttechat web appears to be running on http://%s (pid %s)\n' "$(WEB_ADDR)" "$$pid"; \
+		printf 'log: %s\n' "$(WEB_LOG_FILE)"; \
+	else \
+		printf 'pyttechat web is not running; stale pid file contains %s\n' "$$pid"; \
+	fi
+
+serve-restart: serve-stop serve-start
 
 clean:
 	rm -rf $(BUILD_DIR) coverage.out coverage.html *.prof *.test test-results
