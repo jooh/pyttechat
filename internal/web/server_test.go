@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 )
@@ -90,6 +91,66 @@ func TestCreateTurnRejectsEmptyPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateTurnRejectsMalformedAndTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed", body: `{"prompt":`},
+		{name: "trailing", body: `{"prompt":"hello"} {}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/chat/turns", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("NewRequest error = %v", err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(csrfHeaderName, csrfToken)
+
+			response, body := do(t, client, request)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("POST /chat/turns status = %d, want 400; body = %q", response.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestCreateTurnRejectsConcurrentTurn(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	first := createTurn(t, client, server.URL, csrfToken, "first")
+	_ = llmClient.waitForContext(t)
+
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns", map[string]string{
+		"prompt": "second",
+	})
+	request.Header.Set(csrfHeaderName, csrfToken)
+	response, body := do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("POST /chat/turns status = %d, want 409; body = %q", response.StatusCode, body)
+	}
+
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+first.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResponse, abortBody := do(t, client, request)
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+}
+
 func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	llmClient := dummy.NewClient(dummy.Turn{
 		ReasoningChunks: []string{"think"},
@@ -150,7 +211,11 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	turn := createTurn(t, client, server.URL, csrfToken, "hello")
 	ctx := llmClient.waitForContext(t)
 
-	response, err := client.Get(server.URL + turn.StreamURL)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET events error = %v", err)
 	}
@@ -168,8 +233,8 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	if frame.ID == "" {
 		t.Fatalf("first frame = %#v, want event id", frame)
 	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatalf("closing subscriber body: %v", err)
+	if closeErr := response.Body.Close(); closeErr != nil {
+		t.Fatalf("closing subscriber body: %v", closeErr)
 	}
 
 	select {
@@ -181,7 +246,7 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
 	close(llmClient.events)
 
-	request, err := http.NewRequest(http.MethodGet, server.URL+turn.StreamURL, nil)
+	request, err = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
 	if err != nil {
 		t.Fatalf("NewRequest replay error = %v", err)
 	}
@@ -253,7 +318,11 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	turn := createTurn(t, client, server.URL, csrfToken, "hello")
 	ctx := llmClient.waitForContext(t)
 
-	response, err := client.Get(server.URL + turn.StreamURL)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET events error = %v", err)
 	}
@@ -263,7 +332,7 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
 	}
 
-	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
 	request.Header.Set(csrfHeaderName, csrfToken)
 	abortResponse, abortBody := do(t, client, request)
 	defer abortResponse.Body.Close()
@@ -286,6 +355,36 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	}
 }
 
+func TestAbortRequiresCSRFAndRejectsFinishedTurn(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	response, body = do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("abort without csrf status = %d, want 403; body = %q", response.StatusCode, body)
+	}
+
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	response, body = do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("abort finished status = %d, want 409; body = %q", response.StatusCode, body)
+	}
+}
+
 func TestAbortResponseWaitsForTurnToReleaseSession(t *testing.T) {
 	llmClient := newAbortBlockingClient()
 	defer llmClient.releaseCanceledStream()
@@ -302,13 +401,13 @@ func TestAbortResponseWaitsForTurnToReleaseSession(t *testing.T) {
 	abortResult := make(chan httpResult, 1)
 	go func() {
 		response, body := do(t, client, request)
+		response.Body.Close()
 		abortResult <- httpResult{response: response, body: body}
 	}()
 
 	llmClient.waitForCancel(t)
 	select {
 	case result := <-abortResult:
-		result.response.Body.Close()
 		t.Fatalf("abort returned before turn released session; status = %d body = %q", result.response.StatusCode, result.body)
 	case <-time.After(50 * time.Millisecond):
 	}
@@ -341,7 +440,11 @@ func TestCompletedEventFinishesTurnWithoutWaitingForEOF(t *testing.T) {
 	turn := createTurn(t, client, server.URL, csrfToken, "hello")
 	_ = llmClient.waitForContext(t)
 
-	response, err := client.Get(server.URL + turn.StreamURL)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET events error = %v", err)
 	}
@@ -358,7 +461,7 @@ func TestCompletedEventFinishesTurnWithoutWaitingForEOF(t *testing.T) {
 	}
 
 	next := createTurn(t, client, server.URL, csrfToken, "follow up")
-	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
 	request.Header.Set(csrfHeaderName, csrfToken)
 	abortResponse, abortBody := do(t, client, request)
 	defer abortResponse.Body.Close()
@@ -377,7 +480,11 @@ func TestTerminalEventAllowsImmediateFollowUpBeforeStreamClose(t *testing.T) {
 	csrfToken := fetchCSRFToken(t, client, server.URL)
 	turn := createTurn(t, client, server.URL, csrfToken, "hello")
 
-	response, err := client.Get(server.URL + turn.StreamURL)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET events error = %v", err)
 	}
@@ -394,7 +501,7 @@ func TestTerminalEventAllowsImmediateFollowUpBeforeStreamClose(t *testing.T) {
 	llmClient.waitForBlockedClose(t)
 
 	next := createTurn(t, client, server.URL, csrfToken, "follow up")
-	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
 	request.Header.Set(csrfHeaderName, csrfToken)
 	abortResponse, abortBody := do(t, client, request)
 	defer abortResponse.Body.Close()
@@ -436,6 +543,185 @@ func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 	}
 	if requests[1].Messages[0].Text() != "first" || requests[1].Messages[1].Text() != "answer 1" || requests[1].Messages[2].Text() != "second" {
 		t.Fatalf("second request messages = %#v, want first conversation context", requests[1].Messages)
+	}
+}
+
+func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}})}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	response, body = get(t, client, server.URL+"/")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if len(response.Cookies()) != 0 {
+		t.Fatalf("Set-Cookie count = %d, want existing session reused without a new cookie", len(response.Cookies()))
+	}
+	if !strings.Contains(body, `message-user`) || !strings.Contains(body, `hello`) {
+		t.Fatalf("GET / body = %q, want rendered user message", body)
+	}
+	if !strings.Contains(body, `message-assistant`) || !strings.Contains(body, `answer`) {
+		t.Fatalf("GET / body = %q, want rendered assistant message", body)
+	}
+}
+
+func TestTurnRoutesReturnNotFound(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+
+	response, body := get(t, client, server.URL+"/chat/turns/")
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET malformed turn route status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+
+	response, body = get(t, client, server.URL+"/chat/turns/missing/events")
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET missing turn events status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/missing/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	response, body = do(t, client, request)
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST missing turn abort status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+
+	response, body = get(t, client, server.URL+"/chat/turns/missing/unknown")
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET unknown turn action status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+}
+
+func TestTurnEventsRequiresFlusher(t *testing.T) {
+	server := NewServer(Options{Client: dummy.NewClient()})
+	turn, err := newTurnJob("hello")
+	if err != nil {
+		t.Fatalf("newTurnJob error = %v", err)
+	}
+	server.sessions["sess_test"] = &browserSession{
+		id:    "sess_test",
+		csrf:  "csrf_test",
+		chat:  chat.NewService(dummy.NewClient()).NewSession(),
+		turns: map[string]*turnJob{turn.id: turn},
+	}
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/chat/turns/"+turn.id+"/events", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+	writer := &nonFlushingHTTPWriter{header: http.Header{}}
+
+	server.handleTurnEvents(writer, request, turn.id)
+
+	if writer.status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", writer.status)
+	}
+	if !strings.Contains(writer.body.String(), "streaming_unsupported") {
+		t.Fatalf("body = %q, want streaming_unsupported", writer.body.String())
+	}
+}
+
+func TestViewMessagesSkipsNonTextMessages(t *testing.T) {
+	messages := viewMessages([]llm.Message{
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "hidden"}}},
+		llm.NewTextMessage(llm.RoleUser, "visible"),
+	})
+
+	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Text != "visible" {
+		t.Fatalf("viewMessages = %#v, want only visible text message", messages)
+	}
+}
+
+func TestStreamHelpersHandleInvalidInputsAndWriterErrors(t *testing.T) {
+	for _, value := range []string{"", "not-an-int", "-1"} {
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/events", nil)
+		request.Header.Set("Last-Event-ID", value)
+		if got := lastEventID(request); got != 0 {
+			t.Fatalf("lastEventID(%q) = %d, want 0", value, got)
+		}
+	}
+
+	name, data := encodeStreamEvent("bad", func() {})
+	if name != "stream-error" || !strings.Contains(string(data), "could not encode") {
+		t.Fatalf("encodeStreamEvent = %q %q, want stream-error fallback", name, data)
+	}
+
+	writer := &failingHTTPWriter{header: http.Header{}, failAt: 0}
+	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "text", Data: []byte(`{}`)}); err == nil {
+		t.Fatalf("writeSSE error = nil, want writer error")
+	}
+}
+
+func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
+	t.Run("stream start failure", func(t *testing.T) {
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{streamErr: io.ErrUnexpectedEOF}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || !hasReplayEvent(replay, "stream-error") {
+			t.Fatalf("replay = %#v terminal=%v, want terminal stream-error", replay, terminal)
+		}
+	})
+
+	t.Run("unexpected eof", func(t *testing.T) {
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || !hasReplayEvent(replay, "stream-error") {
+			t.Fatalf("replay = %#v terminal=%v, want terminal stream-error", replay, terminal)
+		}
+	})
+
+	t.Run("nil event error falls through", func(t *testing.T) {
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{events: []llm.Event{
+			{Type: llm.EventError},
+			{Type: llm.EventCompleted, ResponseID: "resp_done"},
+		}}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || !hasReplayEvent(replay, "done") {
+			t.Fatalf("replay = %#v terminal=%v, want terminal done", replay, terminal)
+		}
+	})
+}
+
+func TestTurnJobFinishClosesSubscribersWithoutTerminalEvent(t *testing.T) {
+	turn := newTestTurnJob(t)
+	_, updates, terminal := turn.subscribe(0)
+	if terminal {
+		t.Fatalf("new turn is terminal")
+	}
+
+	turn.finish()
+
+	if _, ok := <-updates; ok {
+		t.Fatalf("subscriber channel is open, want closed")
+	}
+	if !turn.isTerminal() {
+		t.Fatalf("turn is not terminal after finish")
 	}
 }
 
@@ -520,7 +806,7 @@ func newJSONRequest(t *testing.T, method, url string, payload any) *http.Request
 			t.Fatalf("Encode request body error = %v", err)
 		}
 	}
-	request, err := http.NewRequest(method, url, &body)
+	request, err := http.NewRequestWithContext(context.Background(), method, url, &body)
 	if err != nil {
 		t.Fatalf("NewRequest error = %v", err)
 	}
@@ -531,7 +817,11 @@ func newJSONRequest(t *testing.T, method, url string, payload any) *http.Request
 func get(t *testing.T, client *http.Client, url string) (*http.Response, string) {
 	t.Helper()
 
-	response, err := client.Get(url)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest %s error = %v", url, err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET %s error = %v", url, err)
 	}
@@ -925,4 +1215,97 @@ func itoa(value int) string {
 		value /= 10
 	}
 	return string(digits[pos:])
+}
+
+type nonFlushingHTTPWriter struct {
+	header http.Header
+	body   strings.Builder
+	status int
+}
+
+func (w *nonFlushingHTTPWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *nonFlushingHTTPWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *nonFlushingHTTPWriter) Write(data []byte) (int, error) {
+	return w.body.Write(data)
+}
+
+type failingHTTPWriter struct {
+	header http.Header
+	body   strings.Builder
+	failAt int
+	writes int
+	status int
+}
+
+func (w *failingHTTPWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingHTTPWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *failingHTTPWriter) Write(data []byte) (int, error) {
+	if w.writes >= w.failAt {
+		return 0, io.ErrClosedPipe
+	}
+	w.writes++
+	return w.body.Write(data)
+}
+
+func (*failingHTTPWriter) Flush() {}
+
+type webSequenceClient struct {
+	events    []llm.Event
+	streamErr error
+}
+
+func (c webSequenceClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	if c.streamErr != nil {
+		return nil, c.streamErr
+	}
+	return &webSequenceStream{events: append([]llm.Event(nil), c.events...)}, nil
+}
+
+type webSequenceStream struct {
+	events []llm.Event
+	index  int
+}
+
+func (s *webSequenceStream) Next() (llm.Event, error) {
+	if s.index >= len(s.events) {
+		return llm.Event{}, io.EOF
+	}
+	event := s.events[s.index]
+	s.index++
+	return event, nil
+}
+
+func (*webSequenceStream) Close() error {
+	return nil
+}
+
+func newTestTurnJob(t *testing.T) *turnJob {
+	t.Helper()
+
+	turn, err := newTurnJob("hello")
+	if err != nil {
+		t.Fatalf("newTurnJob error = %v", err)
+	}
+	return turn
+}
+
+func hasReplayEvent(events []streamEvent, name string) bool {
+	for _, event := range events {
+		if event.Name == name {
+			return true
+		}
+	}
+	return false
 }

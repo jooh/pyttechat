@@ -122,13 +122,91 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	if requestBody["store"] != false {
 		t.Fatalf("request store = %v, want false", requestBody["store"])
 	}
-	include := requestBody["include"].([]any)
+	include := requireSlice(t, requestBody["include"], "include")
 	if include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("request include = %#v, want reasoning.encrypted_content", include)
 	}
-	reasoning := requestBody["reasoning"].(map[string]any)
+	reasoning := requireMap(t, requestBody["reasoning"], "reasoning")
 	if reasoning["summary"] != "auto" || reasoning["effort"] != "low" {
 		t.Fatalf("request reasoning = %#v, want summary auto and effort low", reasoning)
+	}
+}
+
+func TestClientBuildsResponsesURLWithExistingPath(t *testing.T) {
+	client := NewClient("https://proxy.example/base/")
+
+	if got := client.responsesURL(); got != "https://proxy.example/base/v1/responses" {
+		t.Fatalf("responsesURL() = %q, want base path preserved", got)
+	}
+}
+
+func TestClientReturnsNonSuccessStatusAsStreamFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "proxy unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	_, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err == nil || !errors.Is(err, ErrStreamFailed) {
+		t.Fatalf("Stream() error = %v, want ErrStreamFailed", err)
+	}
+	if !strings.Contains(err.Error(), "status 502") || !strings.Contains(err.Error(), "proxy unavailable") {
+		t.Fatalf("Stream() error = %q, want status and body", err)
+	}
+}
+
+func TestClientIgnoresCommentsAndMapsMultilineFailedEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ": keepalive\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta",`+"\n")
+		_, _ = io.WriteString(w, `data: "delta":"Hi"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"error":{"message":"proxy failed late"}}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventTextDelta || event.Delta != "Hi" {
+		t.Fatalf("first event = %#v, want text delta Hi", event)
+	}
+
+	_, err = stream.Next()
+	if err == nil || !errors.Is(err, ErrStreamFailed) || !strings.Contains(err.Error(), "proxy failed late") {
+		t.Fatalf("second Next() error = %v, want response.failed stream error", err)
+	}
+}
+
+func TestClientReturnsInvalidStreamJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {bad json}\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer stream.Close()
+
+	if _, err := stream.Next(); err == nil {
+		t.Fatalf("Next() error = nil, want JSON error")
 	}
 }
 
@@ -232,6 +310,35 @@ func TestClientDoesNotDuplicateFinalTextAfterDeltas(t *testing.T) {
 	}
 }
 
+func TestClientSkipsSeenAndInvalidMessageOutputItemContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":3,"text":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":["ignored",{"type":"input_text","text":"skip"},{"type":"output_text","text":""},{"type":"output_text","text":"Hello"},{"type":"text","text":"!"}]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_1"}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	var text string
+	for _, event := range events {
+		if event.Type == llm.EventTextDelta {
+			text += event.Delta
+		}
+	}
+	if text != "Hello!" {
+		t.Fatalf("streamed text = %q, want deduplicated fallback text", text)
+	}
+}
+
 func TestClientOmitsReasoningByDefault(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -292,24 +399,54 @@ func TestClientMapsPriorReasoningIntoInput(t *testing.T) {
 	}
 	drainEvents(t, stream)
 
-	input := requestBody["input"].([]any)
+	input := requireSlice(t, requestBody["input"], "input")
 	if len(input) != 4 {
 		t.Fatalf("input count = %d, want 4: %#v", len(input), input)
 	}
-	reasoning := input[1].(map[string]any)
+	reasoning := requireMap(t, input[1], "input[1]")
 	if reasoning["type"] != "reasoning" || reasoning["id"] != "rs_1" {
 		t.Fatalf("reasoning input = %#v, want reasoning item", reasoning)
 	}
 	if reasoning["encrypted_content"] != "encrypted" {
 		t.Fatalf("encrypted_content = %v, want encrypted", reasoning["encrypted_content"])
 	}
-	summary := reasoning["summary"].([]any)[0].(map[string]any)
+	summaryValues := requireSlice(t, reasoning["summary"], "reasoning.summary")
+	summary := requireMap(t, summaryValues[0], "reasoning.summary[0]")
 	if summary["text"] != "reasoned" {
 		t.Fatalf("summary = %#v, want reasoned", summary)
 	}
-	assistant := input[2].(map[string]any)
+	assistant := requireMap(t, input[2], "input[2]")
 	if assistant["role"] != "assistant" || assistant["content"] != "answer" {
 		t.Fatalf("assistant input = %#v, want assistant answer", assistant)
+	}
+}
+
+func TestOutputItemPartExtractsReasoningContentAndSkipsMalformedSummary(t *testing.T) {
+	part := outputItemPart(map[string]any{
+		"item": map[string]any{
+			"type":              "reasoning",
+			"id":                "rs_1",
+			"encrypted_content": "encrypted",
+			"content": []any{
+				"ignored",
+				map[string]any{"text": "reasoning text"},
+			},
+			"summary": []any{
+				"ignored",
+				map[string]any{"text": ""},
+				map[string]any{"text": "summary text"},
+			},
+		},
+	})
+
+	if part.Type != llm.PartReasoning || part.ID != "rs_1" || part.EncryptedContent != "encrypted" {
+		t.Fatalf("part metadata = %#v, want reasoning metadata", part)
+	}
+	if part.Text != "reasoning text" {
+		t.Fatalf("part text = %q, want reasoning text", part.Text)
+	}
+	if len(part.Summary) != 1 || part.Summary[0] != "summary text" {
+		t.Fatalf("summary = %#v, want one summary text", part.Summary)
 	}
 }
 
@@ -381,4 +518,24 @@ func drainEvents(t *testing.T, stream llm.Stream) []llm.Event {
 		}
 		events = append(events, event)
 	}
+}
+
+func requireSlice(t *testing.T, value any, name string) []any {
+	t.Helper()
+
+	typed, ok := value.([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want []any", name, value)
+	}
+	return typed
+}
+
+func requireMap(t *testing.T, value any, name string) map[string]any {
+	t.Helper()
+
+	typed, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want map[string]any", name, value)
+	}
+	return typed
 }

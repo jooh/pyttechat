@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"example.com/llm-chat-web/internal/chat"
+	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
 )
 
@@ -109,13 +111,13 @@ func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
 		t.Fatalf("request count = %d, want 2", len(requestBodies))
 	}
 
-	input := requestBodies[1]["input"].([]any)
+	input := requireSlice(t, requestBodies[1]["input"], "input")
 	if len(input) != 3 {
 		t.Fatalf("second request input count = %d, want prior user, assistant, next user: %#v", len(input), input)
 	}
-	firstUser := input[0].(map[string]any)
-	priorAssistant := input[1].(map[string]any)
-	secondUser := input[2].(map[string]any)
+	firstUser := requireMap(t, input[0], "input[0]")
+	priorAssistant := requireMap(t, input[1], "input[1]")
+	secondUser := requireMap(t, input[2], "input[2]")
 	if firstUser["role"] != "user" || firstUser["content"] != "first" {
 		t.Fatalf("first input = %#v, want first user turn", firstUser)
 	}
@@ -135,6 +137,37 @@ func TestChatCommandRejectsArgs(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `unknown command "unexpected"`) && !strings.Contains(stderr, "accepts 0 arg(s)") {
 		t.Fatalf("stderr = %q, want argument error", stderr)
+	}
+}
+
+func TestChatCommandRejectsBlankInputLine(t *testing.T) {
+	code, _, stderr := runCommand(t, "\n", "chat")
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "prompt must not be empty") {
+		t.Fatalf("stderr = %q, want empty prompt error", stderr)
+	}
+}
+
+func TestChatCommandReturnsScannerError(t *testing.T) {
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"chat"}, failingReader{}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "unexpected EOF") {
+		t.Fatalf("stderr = %q, want scanner read failure", stderr.String())
 	}
 }
 
@@ -193,6 +226,71 @@ func TestServeCommandHelpShowsWebOptions(t *testing.T) {
 	}
 }
 
+func TestEnvironmentHelpersAndProxyTimeoutDefault(t *testing.T) {
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "2s")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "127.0.0.1:3001")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "yes")
+
+	command := NewRootCommand(strings.NewReader(""), io.Discard, io.Discard)
+	timeoutFlag := command.PersistentFlags().Lookup("proxy-timeout")
+	if timeoutFlag == nil || timeoutFlag.DefValue != "2s" {
+		t.Fatalf("proxy-timeout default = %#v, want 2s", timeoutFlag)
+	}
+
+	if got := envString("PYTTECHAT_WEB_ADDR", "fallback"); got != "127.0.0.1:3001" {
+		t.Fatalf("envString = %q, want configured address", got)
+	}
+	if !envBool("PYTTECHAT_SECURE_COOKIES") {
+		t.Fatalf("envBool yes = false, want true")
+	}
+
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "off")
+	if envBool("PYTTECHAT_SECURE_COOKIES") {
+		t.Fatalf("envBool off = true, want false")
+	}
+}
+
+func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
+	t.Run("reasoning only", func(t *testing.T) {
+		stream := newCLITestTurnStream(t, []llm.Event{
+			{Type: llm.EventReasoningDelta, Delta: "thinking"},
+			{Type: llm.EventCompleted},
+		})
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+
+		if err := printStream(stream, &stdout, &stderr); err != nil {
+			t.Fatalf("printStream error = %v, want nil", err)
+		}
+		if stdout.String() != "" {
+			t.Fatalf("stdout = %q, want no newline without text", stdout.String())
+		}
+		if stderr.String() != "thinking" {
+			t.Fatalf("stderr = %q, want reasoning", stderr.String())
+		}
+	})
+
+	t.Run("stdout write failure", func(t *testing.T) {
+		stream := newCLITestTurnStream(t, []llm.Event{
+			{Type: llm.EventTextDelta, Delta: "answer"},
+		})
+
+		if err := printStream(stream, failingWriter{}, io.Discard); err == nil {
+			t.Fatalf("printStream error = nil, want stdout writer error")
+		}
+	})
+
+	t.Run("stderr write failure", func(t *testing.T) {
+		stream := newCLITestTurnStream(t, []llm.Event{
+			{Type: llm.EventReasoningDelta, Delta: "thinking"},
+		})
+
+		if err := printStream(stream, io.Discard, failingWriter{}); err == nil {
+			t.Fatalf("printStream error = nil, want stderr writer error")
+		}
+	})
+}
+
 func TestServeCommandStartsWebHandler(t *testing.T) {
 	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
 	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
@@ -213,7 +311,11 @@ func TestServeCommandStartsWebHandler(t *testing.T) {
 
 	addr := waitForListenAddr(t, stderr)
 	client := &http.Client{Timeout: time.Second}
-	response, err := client.Get("http://" + addr + "/")
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET / error = %v", err)
 	}
@@ -337,18 +439,19 @@ func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
 	if reasoning["summary"] != "auto" || reasoning["effort"] != "medium" {
 		t.Fatalf("proxy request reasoning = %#v, want summary auto and effort medium", reasoning)
 	}
-	input := body["input"].([]any)
+	input := requireSlice(t, body["input"], "input")
 	if len(input) != 1 {
 		t.Fatalf("proxy request input = %#v, want one browser user message", input)
 	}
-	message := input[0].(map[string]any)
+	message := requireMap(t, input[0], "input[0]")
 	if message["role"] != "user" || message["content"] != "hello from browser" {
 		t.Fatalf("proxy request input message = %#v, want submitted browser prompt", message)
 	}
 }
 
 func TestServeCommandReportsBindFailure(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen error = %v", err)
 	}
@@ -378,6 +481,75 @@ func TestNoArgsPrintsHelp(t *testing.T) {
 type safeBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+type cliEventClient struct {
+	events []llm.Event
+}
+
+func (c cliEventClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return &cliEventStream{events: append([]llm.Event(nil), c.events...)}, nil
+}
+
+type cliEventStream struct {
+	events []llm.Event
+	index  int
+}
+
+func (s *cliEventStream) Next() (llm.Event, error) {
+	if s.index >= len(s.events) {
+		return llm.Event{}, io.EOF
+	}
+	event := s.events[s.index]
+	s.index++
+	return event, nil
+}
+
+func (*cliEventStream) Close() error {
+	return nil
+}
+
+func newCLITestTurnStream(t *testing.T, events []llm.Event) *chat.TurnStream {
+	t.Helper()
+
+	session := chat.NewService(cliEventClient{events: events}).NewSession()
+	stream, err := session.Send(context.Background(), "hello", chat.SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	return stream
+}
+
+func requireSlice(t *testing.T, value any, name string) []any {
+	t.Helper()
+
+	typed, ok := value.([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want []any", name, value)
+	}
+	return typed
+}
+
+func requireMap(t *testing.T, value any, name string) map[string]any {
+	t.Helper()
+
+	typed, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want map[string]any", name, value)
+	}
+	return typed
 }
 
 func (b *safeBuffer) Write(p []byte) (int, error) {
@@ -495,7 +667,7 @@ func newServedRequest(t *testing.T, method, url string, payload any) *http.Reque
 			t.Fatalf("Encode request body error = %v", err)
 		}
 	}
-	request, err := http.NewRequest(method, url, &body)
+	request, err := http.NewRequestWithContext(context.Background(), method, url, &body)
 	if err != nil {
 		t.Fatalf("NewRequest error = %v", err)
 	}

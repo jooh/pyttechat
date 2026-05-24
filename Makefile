@@ -35,6 +35,8 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
+COVERAGE_PROFILE ?= coverage.out
+COVERAGE_MIN ?= 90.0
 
 GO_FILES := $(shell find . \( -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 
@@ -56,7 +58,7 @@ help:
 		'  tidy-check    Check go.mod/go.sum tidiness.' \
 		'  test          Run unit tests.' \
 		'  test-race     Run unit tests with the race detector.' \
-		'  coverage      Generate coverage.out and print coverage summary.' \
+		'  coverage      Generate coverage.out, print summary, and enforce minimum coverage.' \
 		'  lint          Run golangci-lint.' \
 		'  lint-fast     Run fast local lint checks.' \
 		'  vet           Run go vet.' \
@@ -129,8 +131,21 @@ test-race: cache-dirs
 	$(GO) test -race ./...
 
 coverage: cache-dirs
-	$(GO) test -coverprofile=coverage.out ./...
-	$(GO) tool cover -func=coverage.out
+	$(GO) test -coverprofile=$(COVERAGE_PROFILE) ./...
+	@coverage_output=$$($(GO) tool cover -func=$(COVERAGE_PROFILE)); \
+	printf '%s\n' "$$coverage_output"; \
+	total=$$(printf '%s\n' "$$coverage_output" | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }'); \
+	awk -v total="$$total" -v minimum="$(COVERAGE_MIN)" 'BEGIN { \
+		if (total == "") { \
+			print "could not determine total coverage"; \
+			exit 1; \
+		} \
+		if (total + 0 < minimum + 0) { \
+			printf "coverage %.1f%% is below required %.1f%%\n", total, minimum; \
+			exit 1; \
+		} \
+		printf "coverage %.1f%% meets required %.1f%%\n", total, minimum; \
+	}'
 
 lint: cache-dirs $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...

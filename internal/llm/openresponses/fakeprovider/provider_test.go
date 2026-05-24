@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +15,7 @@ import (
 
 func TestNonStreamingResponseReturnsJSON(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"dummy-responses","input":"hello world"}`))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"dummy-responses","input":"hello world"}`))
 	request.Header.Set("Content-Type", "application/json")
 
 	NewHandler().ServeHTTP(recorder, request)
@@ -41,11 +43,11 @@ func TestNonStreamingResponseReturnsJSON(t *testing.T) {
 	if payload["output_text"] != "Echo: hello world" {
 		t.Fatalf("output_text = %v, want echo text", payload["output_text"])
 	}
-	output := payload["output"].([]any)
-	if got := outputItemText(output[0].(map[string]any)); got != "Echo: hello world" {
+	output := requireSlice(t, payload["output"], "output")
+	if got := outputItemText(requireMap(t, output[0], "output[0]")); got != "Echo: hello world" {
 		t.Fatalf("output item text = %q, want echo text", got)
 	}
-	usage := payload["usage"].(map[string]any)
+	usage := requireMap(t, payload["usage"], "usage")
 	if usage["total_tokens"] == float64(0) {
 		t.Fatalf("usage = %#v, want deterministic non-zero usage", usage)
 	}
@@ -103,7 +105,7 @@ func TestStreamingResponseReturnsFullResponsesLifecycle(t *testing.T) {
 
 func TestStreamingResponseHasSSEHeaders(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello","stream":true}`))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello","stream":true}`))
 
 	NewHandler().ServeHTTP(recorder, request)
 
@@ -207,7 +209,7 @@ func TestStreamingResponseIsStableAcrossIdenticalRequests(t *testing.T) {
 
 func TestInvalidJSONReturnsBadRequestJSONNotSSE(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true`))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true`))
 
 	NewHandler().ServeHTTP(recorder, request)
 
@@ -225,13 +227,168 @@ func TestInvalidJSONReturnsBadRequestJSONNotSSE(t *testing.T) {
 	}
 }
 
+func TestRejectsUnknownRouteAndMethod(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "unknown route",
+			method:     http.MethodPost,
+			path:       "/v1/unknown",
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "wrong method",
+			method:     http.MethodGet,
+			path:       "/v1/responses",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantCode:   "method_not_allowed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
+
+			NewHandler().ServeHTTP(recorder, request)
+
+			response := recorder.Result()
+			defer response.Body.Close()
+			if response.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", response.StatusCode, tc.wantStatus)
+			}
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("ReadAll body error = %v", err)
+			}
+			if !strings.Contains(string(body), tc.wantCode) {
+				t.Fatalf("body = %q, want code %q", body, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestRejectsTrailingJSON(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello"} {}`))
+
+	NewHandler().ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.StatusCode)
+	}
+}
+
+func TestNormalizedInputTextAcceptsOpenResponsesShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing", raw: ``, want: ""},
+		{name: "null", raw: `null`, want: ""},
+		{name: "invalid", raw: `{`, want: ""},
+		{name: "string", raw: `"  hello    world  "`, want: "hello world"},
+		{name: "content string", raw: `{"content":"  hello  from content  "}`, want: "hello from content"},
+		{name: "text field", raw: `{"text":"  hello  from text  "}`, want: "hello from text"},
+		{name: "input text field", raw: `{"input_text":"  hello  from input text  "}`, want: "hello from input text"},
+		{
+			name: "content array",
+			raw:  `{"content":["hello ",{"text":"from "},{"input_text":"array"}]}`,
+			want: "hello from array",
+		},
+		{
+			name: "latest message wins",
+			raw:  `[{"text":"first"},{"content":[{"text":"second"}]},{"input_text":" final  answer "}]`,
+			want: "final answer",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizedInputText(json.RawMessage(tc.raw)); got != tc.want {
+				t.Fatalf("normalizedInputText(%s) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmptyInputUsesDefaultModelAndZeroInputTokens(t *testing.T) {
+	response := buildResponse(requestBody{})
+
+	if response.Model != defaultModel {
+		t.Fatalf("model = %q, want default model", response.Model)
+	}
+	if response.OutputText != "Echo: " {
+		t.Fatalf("output_text = %q, want empty echo", response.OutputText)
+	}
+	if response.Usage.InputTokens != 0 {
+		t.Fatalf("input tokens = %d, want 0", response.Usage.InputTokens)
+	}
+}
+
+func TestStreamingRequiresFlusher(t *testing.T) {
+	writer := &nonFlushingResponseWriter{header: http.Header{}}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", nil)
+
+	err := writeStreamingResponse(writer, request, buildResponse(requestBody{Input: json.RawMessage(`"hello"`)}))
+
+	if err != nil {
+		t.Fatalf("writeStreamingResponse error = %v, want nil", err)
+	}
+	if writer.status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", writer.status)
+	}
+	if !strings.Contains(writer.body.String(), "streaming_unsupported") {
+		t.Fatalf("body = %q, want streaming_unsupported", writer.body.String())
+	}
+}
+
+func TestStreamingWriteFailureReturnsError(t *testing.T) {
+	writer := &failingResponseWriter{
+		header: http.Header{},
+		failAt: 1,
+	}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", nil)
+
+	err := writeStreamingResponse(writer, request, buildResponse(requestBody{Input: json.RawMessage(`"hello"`)}))
+
+	if err == nil {
+		t.Fatalf("writeStreamingResponse error = nil, want write failure")
+	}
+}
+
+func TestSSEHelpersHandleErrorsAndSequenceFallbacks(t *testing.T) {
+	writer := &failingResponseWriter{header: http.Header{}, failAt: 0}
+	if err := writeSSEEvent(writer, writer, "bad", map[string]any{"bad": math.Inf(1)}); err == nil {
+		t.Fatalf("writeSSEEvent marshal error = nil, want error")
+	}
+	if err := writeSSEDone(writer, writer); err == nil {
+		t.Fatalf("writeSSEDone error = nil, want write error")
+	}
+
+	if got := nextSequence(map[string]any{"sequence_number": float64(7)}); got != 8 {
+		t.Fatalf("nextSequence(float64) = %d, want 8", got)
+	}
+	if got := nextSequence(map[string]any{}); got != 0 {
+		t.Fatalf("nextSequence(missing) = %d, want 0", got)
+	}
+	if got := chunkText(""); len(got) != 1 || got[0] != "" {
+		t.Fatalf("chunkText empty = %#v, want one empty chunk", got)
+	}
+}
+
 func TestStreamingStopsCleanlyOnRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	writer := &cancelingResponseWriter{
 		header: http.Header{},
 		cancel: cancel,
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello world","stream":true}`)).WithContext(ctx)
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello world","stream":true}`))
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -252,7 +409,7 @@ func streamResponse(t *testing.T, requestBody string) []byte {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(requestBody))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(requestBody))
 	request.Header.Set("Content-Type", "application/json")
 
 	NewHandler().ServeHTTP(recorder, request)
@@ -330,6 +487,26 @@ func outputItemText(item map[string]any) string {
 	return text
 }
 
+func requireSlice(t *testing.T, value any, name string) []any {
+	t.Helper()
+
+	typed, ok := value.([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want []any", name, value)
+	}
+	return typed
+}
+
+func requireMap(t *testing.T, value any, name string) map[string]any {
+	t.Helper()
+
+	typed, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want map[string]any", name, value)
+	}
+	return typed
+}
+
 type cancelingResponseWriter struct {
 	header  http.Header
 	body    strings.Builder
@@ -352,3 +529,47 @@ func (w *cancelingResponseWriter) Flush() {
 	w.flushes++
 	w.cancel()
 }
+
+type nonFlushingResponseWriter struct {
+	header http.Header
+	body   strings.Builder
+	status int
+}
+
+func (w *nonFlushingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *nonFlushingResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *nonFlushingResponseWriter) Write(data []byte) (int, error) {
+	return w.body.Write(data)
+}
+
+type failingResponseWriter struct {
+	header http.Header
+	body   strings.Builder
+	failAt int
+	writes int
+	status int
+}
+
+func (w *failingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *failingResponseWriter) Write(data []byte) (int, error) {
+	if w.writes >= w.failAt {
+		return 0, errors.New("write failed")
+	}
+	w.writes++
+	return w.body.Write(data)
+}
+
+func (*failingResponseWriter) Flush() {}

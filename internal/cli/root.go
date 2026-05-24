@@ -90,7 +90,8 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				Handler:           handler,
 				ReadHeaderTimeout: 5 * time.Second,
 			}
-			listener, err := net.Listen("tcp", opts.webAddr)
+			var listenConfig net.ListenConfig
+			listener, err := listenConfig.Listen(ctx, "tcp", opts.webAddr)
 			if err != nil {
 				return err
 			}
@@ -263,7 +264,7 @@ func newVersionCommand(stdout io.Writer) *cobra.Command {
 }
 
 func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	cmd := NewRootCommand(stdin, stdout, stderr)
+	cmd := NewRootCommand(stdin, stdout, stderr) //nolint:contextcheck
 	cmd.SetArgs(args)
 	cmd.SetContext(ctx)
 

@@ -162,6 +162,43 @@ func TestSessionDoesNotStoreFailedTurn(t *testing.T) {
 	}
 }
 
+func TestSessionReleasesTurnWhenClientStreamFailsToStart(t *testing.T) {
+	session := NewService(streamStartFailingClient{}).NewSession()
+
+	_, err := session.Send(context.Background(), "hello", SendOptions{})
+	if err == nil {
+		t.Fatalf("Send() error = nil, want stream start failure")
+	}
+
+	session.client = eventClient{events: []llm.Event{{Type: llm.EventCompleted}}}
+	stream, err := session.Send(context.Background(), "retry", SendOptions{})
+	if err != nil {
+		t.Fatalf("retry Send() error = %v, want nil", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+}
+
+func TestSessionReturnsEventErrorsAndDoesNotStoreTurn(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{{Type: llm.EventError, Err: errors.New("model failed")}},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "hello", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+
+	event, err := stream.Next()
+	if err == nil || event.Type != llm.EventError {
+		t.Fatalf("Next() = %#v, %v; want event error", event, err)
+	}
+	if got := len(session.Messages()); got != 0 {
+		t.Fatalf("message count after event error = %d, want 0", got)
+	}
+}
+
 func TestSessionRejectsConcurrentTurnsUntilStreamCloses(t *testing.T) {
 	session := NewService(eventClient{
 		events: []llm.Event{{Type: llm.EventCompleted}},
@@ -177,16 +214,16 @@ func TestSessionRejectsConcurrentTurnsUntilStreamCloses(t *testing.T) {
 		t.Fatalf("concurrent Send() error = %v, want %v", err, ErrTurnInProgress)
 	}
 
-	if err := first.Close(); err != nil {
-		t.Fatalf("Close() error = %v, want nil", err)
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("Close() error = %v, want nil", closeErr)
 	}
 
 	second, err := session.Send(context.Background(), "second", SendOptions{})
 	if err != nil {
 		t.Fatalf("second Send() after close error = %v, want nil", err)
 	}
-	if err := second.Close(); err != nil {
-		t.Fatalf("second Close() error = %v, want nil", err)
+	if closeErr := second.Close(); closeErr != nil {
+		t.Fatalf("second Close() error = %v, want nil", closeErr)
 	}
 }
 
@@ -214,6 +251,55 @@ func TestSessionMergesCompletedTextPartWithoutDuplicatingDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionStoresCompletedPartsWithoutPriorDeltas(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartReasoning, ID: "rs_1", Text: "thinking", Summary: []string{"summary"}}},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartText, Text: "answer"}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(messages))
+	}
+	if len(messages[1].Parts) != 2 {
+		t.Fatalf("assistant parts = %#v, want reasoning and text parts", messages[1].Parts)
+	}
+	if messages[1].Parts[0].ID != "rs_1" || messages[1].Text() != "answer" {
+		t.Fatalf("assistant message = %#v, want completed reasoning and text", messages[1])
+	}
+}
+
+func TestSessionMessagesReturnsDeepCopy(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartReasoning, Summary: []string{"summary"}}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	messages := session.Messages()
+	messages[1].Parts[0].Summary[0] = "changed"
+
+	if got := session.Messages()[1].Parts[0].Summary[0]; got != "summary" {
+		t.Fatalf("stored summary = %q, want unchanged copy", got)
+	}
+}
+
 type failingClient struct{}
 
 func (failingClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
@@ -228,6 +314,12 @@ func (failingStream) Next() (llm.Event, error) {
 
 func (failingStream) Close() error {
 	return nil
+}
+
+type streamStartFailingClient struct{}
+
+func (streamStartFailingClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream start failed")
 }
 
 type eventClient struct {

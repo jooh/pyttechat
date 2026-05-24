@@ -118,14 +118,14 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 
 	var request createTurnRequest
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	if err := decoder.Decode(&request); err != nil {
+	if decodeErr := decoder.Decode(&request); decodeErr != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
 		return
 	}
-	if err := decoder.Decode(&struct{}{}); err == nil {
+	if decodeErr := decoder.Decode(&struct{}{}); decodeErr == nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "unexpected trailing JSON")
 		return
-	} else if !errors.Is(err, io.EOF) {
+	} else if !errors.Is(decodeErr, io.EOF) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
 		return
 	}
@@ -294,6 +294,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) (*browserSessio
 	s.sessions[id] = session
 	s.mu.Unlock()
 
+	// #nosec G124 -- CookieSecure is configurable so local HTTP development can use cookies; production should enable it.
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    id,
@@ -491,7 +492,6 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				Delta:              event.Delta,
 			})
 		case llm.EventCompleted:
-			completed = true
 			j.emitTerminal("done", doneEvent{
 				TurnID:             j.id,
 				AssistantMessageID: j.assistantMessageID,
