@@ -28,6 +28,8 @@ const (
 //go:embed assets/* templates/*
 var embeddedFiles embed.FS
 
+var randomReader io.Reader = rand.Reader
+
 type Options struct {
 	Client          llm.Client
 	Model           string
@@ -56,11 +58,7 @@ type browserSession struct {
 }
 
 func NewServer(opts Options) *Server {
-	assets, err := fs.Sub(embeddedFiles, "assets")
-	if err != nil {
-		panic(err)
-	}
-
+	assets, _ := fs.Sub(embeddedFiles, "assets")
 	tmpl := template.Must(template.ParseFS(embeddedFiles, "templates/*.html"))
 	return &Server{
 		client:          opts.Client,
@@ -398,7 +396,7 @@ func lastEventID(r *http.Request) int64 {
 
 func randomID(prefix string) (string, error) {
 	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	if _, err := io.ReadFull(randomReader, raw[:]); err != nil {
 		return "", err
 	}
 	return prefix + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
@@ -499,11 +497,6 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				Usage:              event.Usage,
 			})
 			return
-		case llm.EventError:
-			if event.Err != nil {
-				j.emitError(event.Err)
-				return
-			}
 		}
 	}
 }

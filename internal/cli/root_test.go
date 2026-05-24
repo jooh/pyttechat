@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
+
+	"github.com/spf13/cobra"
 )
 
 func runCommand(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -171,6 +174,41 @@ func TestChatCommandReturnsScannerError(t *testing.T) {
 	}
 }
 
+func TestAskAndChatReturnUpstreamFailures(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "proxy failed", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{name: "ask", args: []string{"ask", "hello"}},
+		{name: "chat", args: []string{"chat"}, stdin: "hello\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PYTTECHAT_LLM_PROXY_URL", proxy.URL)
+			t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+			t.Setenv("PYTTECHAT_MODEL", "")
+			t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+			t.Setenv("PYTTECHAT_WEB_ADDR", "")
+			t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := Execute(context.Background(), tc.args, strings.NewReader(tc.stdin), &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("exit code = %d, want 1", code)
+			}
+			if !strings.Contains(stderr.String(), "status 502") {
+				t.Fatalf("stderr = %q, want upstream status", stderr.String())
+			}
+		})
+	}
+}
+
 func TestAskCommandRequiresPrompt(t *testing.T) {
 	code, _, stderr := runCommand(t, "", "ask")
 
@@ -184,6 +222,26 @@ func TestAskCommandRequiresPrompt(t *testing.T) {
 
 	if !strings.Contains(stderr, "Usage:") {
 		t.Fatalf("stderr = %q, want usage", stderr)
+	}
+}
+
+func TestAskCommandReturnsUsageWriteFailure(t *testing.T) {
+	original := printUsage
+	printUsage = func(*cobra.Command) error {
+		return io.ErrClosedPipe
+	}
+	t.Cleanup(func() {
+		printUsage = original
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "closed pipe") {
+		t.Fatalf("stderr = %q, want usage write failure", stderr.String())
 	}
 }
 
@@ -289,6 +347,62 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 			t.Fatalf("printStream error = nil, want stderr writer error")
 		}
 	})
+
+	t.Run("stream failure", func(t *testing.T) {
+		session := chat.NewService(cliErrorClient{err: io.ErrUnexpectedEOF}).NewSession()
+		stream, err := session.Send(context.Background(), "hello", chat.SendOptions{})
+		if err != nil {
+			t.Fatalf("Send() error = %v, want nil", err)
+		}
+		if err := printStream(stream, io.Discard, io.Discard); err == nil {
+			t.Fatalf("printStream error = nil, want stream error")
+		}
+	})
+
+	t.Run("newline write failure", func(t *testing.T) {
+		stream := newCLITestTurnStream(t, []llm.Event{
+			{Type: llm.EventTextDelta, Delta: "answer"},
+			{Type: llm.EventCompleted},
+		})
+		writer := &failAfterWriter{failAt: 1}
+
+		if err := printStream(stream, writer, io.Discard); err == nil {
+			t.Fatalf("printStream error = nil, want newline writer error")
+		}
+	})
+}
+
+func TestChatCommandReturnsPrintStreamFailure(t *testing.T) {
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+
+	code := Execute(context.Background(), []string{"chat"}, strings.NewReader("hello\n"), failingWriter{}, io.Discard)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
+func TestNoArgsReturnsHelpWriteFailure(t *testing.T) {
+	original := commandHelp
+	commandHelp = func(*cobra.Command) error {
+		return io.ErrClosedPipe
+	}
+	t.Cleanup(func() {
+		commandHelp = original
+	})
+
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), nil, strings.NewReader(""), io.Discard, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "closed pipe") {
+		t.Fatalf("stderr = %q, want help write error", stderr.String())
+	}
 }
 
 func TestServeCommandStartsWebHandler(t *testing.T) {
@@ -466,6 +580,78 @@ func TestServeCommandReportsBindFailure(t *testing.T) {
 	}
 }
 
+func TestServeCommandReportsInjectedShutdownAndServeErrors(t *testing.T) {
+	originalListen := listenTCP
+	originalServer := newWebServer
+	t.Cleanup(func() {
+		listenTCP = originalListen
+		newWebServer = originalServer
+	})
+
+	t.Run("shutdown failure", func(t *testing.T) {
+		listener := newFakeListener("127.0.0.1:3000")
+		server := newFakeWebServer(nil, errors.New("shutdown failed"))
+		listenTCP = func(context.Context, string) (net.Listener, error) {
+			return listener, nil
+		}
+		newWebServer = func(string, http.Handler) webServer {
+			return server
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := Execute(ctx, []string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr.String(), "shutdown failed") {
+			t.Fatalf("stderr = %q, want shutdown error", stderr.String())
+		}
+		if !listener.closed {
+			t.Fatalf("listener was not closed")
+		}
+	})
+
+	t.Run("serve failure", func(t *testing.T) {
+		listener := newFakeListener("127.0.0.1:3001")
+		server := newFakeWebServer(errors.New("serve failed"), nil)
+		listenTCP = func(context.Context, string) (net.Listener, error) {
+			return listener, nil
+		}
+		newWebServer = func(string, http.Handler) webServer {
+			return server
+		}
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := Execute(context.Background(), []string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr.String(), "serve failed") {
+			t.Fatalf("stderr = %q, want serve error", stderr.String())
+		}
+	})
+
+	t.Run("server closed", func(t *testing.T) {
+		listenTCP = func(context.Context, string) (net.Listener, error) {
+			return newFakeListener("127.0.0.1:3002"), nil
+		}
+		newWebServer = func(string, http.Handler) webServer {
+			return newFakeWebServer(http.ErrServerClosed, nil)
+		}
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := Execute(context.Background(), []string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+	})
+}
+
 func TestNoArgsPrintsHelp(t *testing.T) {
 	code, stdout, stderr := runCommand(t, "")
 
@@ -493,6 +679,39 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, io.ErrClosedPipe
+}
+
+type failAfterWriter struct {
+	writes int
+	failAt int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.writes >= w.failAt {
+		return 0, io.ErrClosedPipe
+	}
+	w.writes++
+	return len(p), nil
+}
+
+type cliErrorClient struct {
+	err error
+}
+
+func (c cliErrorClient) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return cliErrorStream(c), nil
+}
+
+type cliErrorStream struct {
+	err error
+}
+
+func (s cliErrorStream) Next() (llm.Event, error) {
+	return llm.Event{}, s.err
+}
+
+func (cliErrorStream) Close() error {
+	return nil
 }
 
 type cliEventClient struct {
@@ -562,6 +781,68 @@ func (b *safeBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+type fakeListener struct {
+	addr   net.Addr
+	closed bool
+}
+
+func newFakeListener(addr string) *fakeListener {
+	return &fakeListener{addr: fakeAddr(addr)}
+}
+
+func (l *fakeListener) Accept() (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func (l *fakeListener) Close() error {
+	l.closed = true
+	return nil
+}
+
+func (l *fakeListener) Addr() net.Addr {
+	return l.addr
+}
+
+type fakeAddr string
+
+func (a fakeAddr) Network() string {
+	return "tcp"
+}
+
+func (a fakeAddr) String() string {
+	return string(a)
+}
+
+type fakeWebServer struct {
+	serveErr    error
+	shutdownErr error
+	done        chan struct{}
+	closeOnce   sync.Once
+}
+
+func newFakeWebServer(serveErr, shutdownErr error) *fakeWebServer {
+	return &fakeWebServer{
+		serveErr:    serveErr,
+		shutdownErr: shutdownErr,
+		done:        make(chan struct{}),
+	}
+}
+
+func (s *fakeWebServer) Serve(net.Listener) error {
+	if s.serveErr != nil {
+		return s.serveErr
+	}
+	<-s.done
+	return http.ErrServerClosed
+}
+
+func (s *fakeWebServer) Shutdown(context.Context) error {
+	s.closeOnce.Do(func() {
+		close(s.done)
+	})
+	return s.shutdownErr
 }
 
 func waitForListenAddr(t *testing.T, stderr *safeBuffer) string {

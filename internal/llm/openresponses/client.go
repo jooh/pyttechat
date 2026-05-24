@@ -26,6 +26,8 @@ type Client struct {
 	bearerToken string
 }
 
+var marshalJSON = json.Marshal
+
 type Options struct {
 	Timeout     time.Duration
 	BearerToken string
@@ -53,7 +55,7 @@ func NewClientWithOptions(baseURL string, opts Options) *Client {
 }
 
 func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
-	body, err := json.Marshal(c.createRequestBody(request))
+	body, err := marshalJSON(c.createRequestBody(request))
 	if err != nil {
 		return nil, err
 	}

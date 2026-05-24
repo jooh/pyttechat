@@ -7,6 +7,11 @@ import (
 	"example.com/llm-chat-web/internal/cli"
 )
 
+var (
+	exit    = os.Exit
+	execute = cli.Execute
+)
+
 func main() {
-	os.Exit(cli.Execute(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	exit(execute(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

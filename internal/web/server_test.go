@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"html/template"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -50,6 +52,83 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	}
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("session cookie SameSite = %v, want Lax", cookie.SameSite)
+	}
+}
+
+func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	response, body := get(t, client, server.URL+"/assets/app.css")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET asset status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/css") {
+		t.Fatalf("asset Content-Type = %q, want text/css", got)
+	}
+
+	response, body = get(t, client, server.URL+"/missing")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET missing status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+}
+
+func TestSessionCreationFailuresReturnErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   io.Reader
+	}{
+		{name: "index", method: http.MethodGet, path: "/"},
+		{name: "create turn", method: http.MethodPost, path: "/chat/turns", body: strings.NewReader(`{"prompt":"hello"}`)},
+		{name: "events", method: http.MethodGet, path: "/chat/turns/missing/events"},
+		{name: "abort", method: http.MethodPost, path: "/chat/turns/missing/abort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRandomReader(t, &sequenceRandomReader{failAt: 1})
+			server := NewServer(Options{Client: dummy.NewClient()})
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, tc.body)
+			if tc.body != nil {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			recorder := httptest.NewRecorder()
+
+			server.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("%s %s status = %d, want 500; body = %q", tc.method, tc.path, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionCreationReturnsCSRFIDFailure(t *testing.T) {
+	withRandomReader(t, &sequenceRandomReader{failAt: 2})
+	server := NewServer(Options{Client: dummy.NewClient()})
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("GET / status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestIndexTemplateExecutionError(t *testing.T) {
+	server := NewServer(Options{Client: dummy.NewClient()})
+	server.template = template.Must(template.New("index.html").Parse(`{{template "missing" .}}`))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("GET / status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -117,6 +196,61 @@ func TestCreateTurnRejectsMalformedAndTrailingJSON(t *testing.T) {
 			defer response.Body.Close()
 			if response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("POST /chat/turns status = %d, want 400; body = %q", response.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestCreateTurnRejectsTrailingJSONReadError(t *testing.T) {
+	server := NewServer(Options{Client: dummy.NewClient()})
+	server.sessions["sess_test"] = &browserSession{
+		id:    "sess_test",
+		csrf:  "csrf_test",
+		chat:  chat.NewService(dummy.NewClient()).NewSession(),
+		turns: map[string]*turnJob{},
+	}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/chat/turns", nil)
+	request.Body = &webErrAfterJSONBody{data: []byte(`{"prompt":"hello"}`)}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(csrfHeaderName, "csrf_test")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("POST /chat/turns status = %d, want 400; body = %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateTurnReturnsTurnIDCreationFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "turn id", failAt: 1},
+		{name: "user message id", failAt: 2},
+		{name: "assistant message id", failAt: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRandomReader(t, &sequenceRandomReader{failAt: tc.failAt})
+			server := NewServer(Options{Client: dummy.NewClient()})
+			server.sessions["sess_test"] = &browserSession{
+				id:    "sess_test",
+				csrf:  "csrf_test",
+				chat:  chat.NewService(dummy.NewClient()).NewSession(),
+				turns: map[string]*turnJob{},
+			}
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/chat/turns", strings.NewReader(`{"prompt":"hello"}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(csrfHeaderName, "csrf_test")
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+			recorder := httptest.NewRecorder()
+
+			server.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("POST /chat/turns status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
 			}
 		})
 	}
@@ -636,6 +770,57 @@ func TestTurnEventsRequiresFlusher(t *testing.T) {
 	}
 }
 
+func TestTurnEventsStopsOnReplayAndUpdateWriteErrors(t *testing.T) {
+	t.Run("replay write error", func(t *testing.T) {
+		server := NewServer(Options{Client: dummy.NewClient()})
+		turn := newTestTurnJob(t)
+		turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "hello"})
+		server.sessions["sess_test"] = &browserSession{
+			id:    "sess_test",
+			csrf:  "csrf_test",
+			chat:  chat.NewService(dummy.NewClient()).NewSession(),
+			turns: map[string]*turnJob{turn.id: turn},
+		}
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/chat/turns/"+turn.id+"/events", nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+		writer := &failingHTTPWriter{header: http.Header{}, failAt: 0}
+
+		server.handleTurnEvents(writer, request, turn.id)
+
+		if writer.status != http.StatusOK {
+			t.Fatalf("status = %d, want stream started", writer.status)
+		}
+	})
+
+	t.Run("update write error", func(t *testing.T) {
+		server := NewServer(Options{Client: dummy.NewClient()})
+		turn := newTestTurnJob(t)
+		server.sessions["sess_test"] = &browserSession{
+			id:    "sess_test",
+			csrf:  "csrf_test",
+			chat:  chat.NewService(dummy.NewClient()).NewSession(),
+			turns: map[string]*turnJob{turn.id: turn},
+		}
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/chat/turns/"+turn.id+"/events", nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+		writer := &failingHTTPWriter{header: http.Header{}, failAt: 0}
+		done := make(chan struct{})
+
+		go func() {
+			server.handleTurnEvents(writer, request, turn.id)
+			close(done)
+		}()
+		waitForSubscriber(t, turn)
+		turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "hello"})
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("handleTurnEvents did not return after update write failure")
+		}
+	})
+}
+
 func TestViewMessagesSkipsNonTextMessages(t *testing.T) {
 	messages := viewMessages([]llm.Message{
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "hidden"}}},
@@ -664,6 +849,16 @@ func TestStreamHelpersHandleInvalidInputsAndWriterErrors(t *testing.T) {
 	writer := &failingHTTPWriter{header: http.Header{}, failAt: 0}
 	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "text", Data: []byte(`{}`)}); err == nil {
 		t.Fatalf("writeSSE error = nil, want writer error")
+	}
+
+	writer = &failingHTTPWriter{header: http.Header{}, failAt: 1}
+	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "text", Data: []byte(`{}`)}); err == nil {
+		t.Fatalf("writeSSE event error = nil, want writer error")
+	}
+
+	writer = &failingHTTPWriter{header: http.Header{}, failAt: 1}
+	if err := writeSSE(writer, writer, streamEvent{Name: "text", Data: []byte(`{}`)}); err == nil {
+		t.Fatalf("writeSSE data error = nil, want writer error")
 	}
 }
 
@@ -706,6 +901,20 @@ func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
 			t.Fatalf("replay = %#v terminal=%v, want terminal done", replay, terminal)
 		}
 	})
+
+	t.Run("event error with cause", func(t *testing.T) {
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{events: []llm.Event{
+			{Type: llm.EventError, Err: errors.New("event failed")},
+		}}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || !hasReplayEvent(replay, "stream-error") {
+			t.Fatalf("replay = %#v terminal=%v, want terminal stream-error", replay, terminal)
+		}
+	})
 }
 
 func TestTurnJobFinishClosesSubscribersWithoutTerminalEvent(t *testing.T) {
@@ -723,6 +932,38 @@ func TestTurnJobFinishClosesSubscribersWithoutTerminalEvent(t *testing.T) {
 	if !turn.isTerminal() {
 		t.Fatalf("turn is not terminal after finish")
 	}
+
+	turn.finish()
+	if !turn.doneClosed {
+		t.Fatalf("turn done is not marked closed after double finish")
+	}
+}
+
+func TestTurnJobTerminalEmitNoOpsAndAbortContextDone(t *testing.T) {
+	turn := newTestTurnJob(t)
+	_, updates, terminal := turn.subscribe(0)
+	if terminal {
+		t.Fatalf("new turn is terminal")
+	}
+	for i := 0; i < cap(updates); i++ {
+		updates <- streamEvent{}
+	}
+	turn.emitTerminal("done", doneEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID})
+	turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "ignored"})
+	turn.emitTerminal("done", doneEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID})
+
+	replay, _, terminal := turn.subscribe(0)
+	if !terminal || len(replay) != 1 {
+		t.Fatalf("replay = %#v terminal=%v, want one terminal event", replay, terminal)
+	}
+
+	turn = newTestTurnJob(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !turn.abort(ctx) {
+		t.Fatalf("abort returned false, want true before terminal")
+	}
+	turn.finish()
 }
 
 type turnResponse struct {
@@ -747,6 +988,32 @@ func waitHTTPResult(t *testing.T, results <-chan httpResult) httpResult {
 		t.Fatalf("HTTP request did not finish")
 		return httpResult{}
 	}
+}
+
+func withRandomReader(t *testing.T, reader io.Reader) {
+	t.Helper()
+
+	original := randomReader
+	randomReader = reader
+	t.Cleanup(func() {
+		randomReader = original
+	})
+}
+
+func waitForSubscriber(t *testing.T, turn *turnJob) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		turn.mu.Lock()
+		count := len(turn.subscribers)
+		turn.mu.Unlock()
+		if count > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("subscriber was not registered")
 }
 
 func testHTTPClient(t *testing.T) *http.Client {
@@ -1200,6 +1467,39 @@ func (s *closeBlockingStream) Close() error {
 		close(s.closeStarted)
 	})
 	<-s.closeRelease
+	return nil
+}
+
+type sequenceRandomReader struct {
+	calls  int
+	failAt int
+}
+
+func (r *sequenceRandomReader) Read(p []byte) (int, error) {
+	r.calls++
+	if r.failAt > 0 && r.calls >= r.failAt {
+		return 0, errors.New("random failed")
+	}
+	for i := range p {
+		p[i] = byte(r.calls)
+	}
+	return len(p), nil
+}
+
+type webErrAfterJSONBody struct {
+	data []byte
+	read bool
+}
+
+func (b *webErrAfterJSONBody) Read(p []byte) (int, error) {
+	if !b.read {
+		b.read = true
+		return copy(p, b.data), nil
+	}
+	return 0, errors.New("trailing read failed")
+}
+
+func (*webErrAfterJSONBody) Close() error {
 	return nil
 }
 

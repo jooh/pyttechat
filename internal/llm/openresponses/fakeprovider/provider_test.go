@@ -285,6 +285,16 @@ func TestRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeRequestReturnsSecondDecodeReadError(t *testing.T) {
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", nil)
+	request.Body = &errAfterJSONBody{data: []byte(`{"input":"hello"}`)}
+
+	_, err := decodeRequest(request)
+	if err == nil || !strings.Contains(err.Error(), "second decode failed") {
+		t.Fatalf("decodeRequest error = %v, want second decode read error", err)
+	}
+}
+
 func TestNormalizedInputTextAcceptsOpenResponsesShapes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -298,6 +308,7 @@ func TestNormalizedInputTextAcceptsOpenResponsesShapes(t *testing.T) {
 		{name: "content string", raw: `{"content":"  hello  from content  "}`, want: "hello from content"},
 		{name: "text field", raw: `{"text":"  hello  from text  "}`, want: "hello from text"},
 		{name: "input text field", raw: `{"input_text":"  hello  from input text  "}`, want: "hello from input text"},
+		{name: "unsupported map", raw: `{"unknown":{"text":"ignored"}}`, want: ""},
 		{
 			name: "content array",
 			raw:  `{"content":["hello ",{"text":"from "},{"input_text":"array"}]}`,
@@ -362,6 +373,20 @@ func TestStreamingWriteFailureReturnsError(t *testing.T) {
 	}
 }
 
+func TestHandlerIgnoresStreamingWriteFailure(t *testing.T) {
+	writer := &failingResponseWriter{
+		header: http.Header{},
+		failAt: 1,
+	}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello","stream":true}`))
+
+	NewHandler().ServeHTTP(writer, request)
+
+	if writer.status != http.StatusOK {
+		t.Fatalf("status = %d, want streaming response started", writer.status)
+	}
+}
+
 func TestSSEHelpersHandleErrorsAndSequenceFallbacks(t *testing.T) {
 	writer := &failingResponseWriter{header: http.Header{}, failAt: 0}
 	if err := writeSSEEvent(writer, writer, "bad", map[string]any{"bad": math.Inf(1)}); err == nil {
@@ -399,6 +424,25 @@ func TestStreamingStopsCleanlyOnRequestCancellation(t *testing.T) {
 
 	if writer.flushes == 0 {
 		t.Fatalf("flush count = 0, want at least one event before cancellation")
+	}
+	if strings.Contains(writer.body.String(), "[DONE]") {
+		t.Fatalf("body contains terminal marker after cancellation:\n%s", writer.body.String())
+	}
+}
+
+func TestStreamingStopsOnCancellationAfterEventsBeforeDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	resp := buildResponse(requestBody{Input: json.RawMessage(`"hello world"`)})
+	writer := &cancelAfterFlushResponseWriter{
+		header:   http.Header{},
+		cancel:   cancel,
+		cancelAt: len(buildStreamEvents(resp)),
+	}
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/responses", nil)
+
+	err := writeStreamingResponse(writer, request, resp)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeStreamingResponse error = %v, want context canceled", err)
 	}
 	if strings.Contains(writer.body.String(), "[DONE]") {
 		t.Fatalf("body contains terminal marker after cancellation:\n%s", writer.body.String())
@@ -573,3 +617,48 @@ func (w *failingResponseWriter) Write(data []byte) (int, error) {
 }
 
 func (*failingResponseWriter) Flush() {}
+
+type errAfterJSONBody struct {
+	data []byte
+	read bool
+}
+
+func (b *errAfterJSONBody) Read(p []byte) (int, error) {
+	if !b.read {
+		b.read = true
+		return copy(p, b.data), nil
+	}
+	return 0, errors.New("second decode failed")
+}
+
+func (*errAfterJSONBody) Close() error {
+	return nil
+}
+
+type cancelAfterFlushResponseWriter struct {
+	header   http.Header
+	body     strings.Builder
+	cancel   context.CancelFunc
+	cancelAt int
+	flushes  int
+	status   int
+}
+
+func (w *cancelAfterFlushResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *cancelAfterFlushResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *cancelAfterFlushResponseWriter) Write(data []byte) (int, error) {
+	return w.body.Write(data)
+}
+
+func (w *cancelAfterFlushResponseWriter) Flush() {
+	w.flushes++
+	if w.flushes == w.cancelAt {
+		w.cancel()
+	}
+}

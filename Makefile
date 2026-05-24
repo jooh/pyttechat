@@ -36,7 +36,7 @@ GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
 COVERAGE_PROFILE ?= coverage.out
-COVERAGE_MIN ?= 90.0
+COVERAGE_MIN ?= 100.0
 
 GO_FILES := $(shell find . \( -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 

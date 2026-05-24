@@ -34,6 +34,29 @@ type rootOptions struct {
 	secureCookies   bool
 }
 
+type webServer interface {
+	Serve(net.Listener) error
+	Shutdown(context.Context) error
+}
+
+var (
+	listenTCP = func(ctx context.Context, addr string) (net.Listener, error) {
+		var listenConfig net.ListenConfig
+		return listenConfig.Listen(ctx, "tcp", addr)
+	}
+	newWebServer = func(addr string, handler http.Handler) webServer {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+	}
+	commandHelp = func(cmd *cobra.Command) error {
+		return cmd.Help()
+	}
+	printUsage = printUsageToError
+)
+
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	opts := rootOptions{
 		proxyURL:      os.Getenv("PYTTECHAT_LLM_PROXY_URL"),
@@ -85,13 +108,8 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				ReasoningEffort: opts.reasoningEffort,
 				CookieSecure:    opts.secureCookies,
 			})
-			server := &http.Server{
-				Addr:              opts.webAddr,
-				Handler:           handler,
-				ReadHeaderTimeout: 5 * time.Second,
-			}
-			var listenConfig net.ListenConfig
-			listener, err := listenConfig.Listen(ctx, "tcp", opts.webAddr)
+			server := newWebServer(opts.webAddr, handler)
+			listener, err := listenTCP(ctx, opts.webAddr)
 			if err != nil {
 				return err
 			}
@@ -132,7 +150,7 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 		Short: "Send a prompt to the configured LLM",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				if err := printUsageToError(cmd); err != nil {
+				if err := printUsage(cmd); err != nil {
 					return err
 				}
 				return fmt.Errorf("prompt is required")
@@ -269,7 +287,7 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	cmd.SetContext(ctx)
 
 	if len(args) == 0 {
-		if err := cmd.Help(); err != nil {
+		if err := commandHelp(cmd); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

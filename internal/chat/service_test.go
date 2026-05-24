@@ -278,6 +278,83 @@ func TestSessionStoresCompletedPartsWithoutPriorDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionSkipsEmptyDeltasAndCompletedParts(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventReasoningDelta},
+			{Type: llm.EventTextDelta},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(messages))
+	}
+	if len(messages[1].Parts) != 0 {
+		t.Fatalf("assistant parts = %#v, want none", messages[1].Parts)
+	}
+}
+
+func TestSessionMergesReasoningAfterTrailingText(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventReasoningDelta, Delta: "rough"},
+			{Type: llm.EventTextDelta, Delta: "answer"},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartReasoning, ID: "rs_1", Text: "final", Summary: []string{"summary"}}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	parts := session.Messages()[1].Parts
+	if len(parts) != 2 {
+		t.Fatalf("assistant parts = %#v, want reasoning and text", parts)
+	}
+	if parts[0].Type != llm.PartReasoning || parts[0].Text != "final" || parts[0].ID != "rs_1" {
+		t.Fatalf("reasoning part = %#v, want merged completed metadata", parts[0])
+	}
+	if parts[1].Type != llm.PartText || parts[1].Text != "answer" {
+		t.Fatalf("text part = %#v, want trailing text preserved", parts[1])
+	}
+}
+
+func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
+	session := NewService(dummy.NewClient()).NewSession()
+	turn := &TurnStream{
+		session:     session,
+		userMessage: llm.NewTextMessage(llm.RoleUser, "hello"),
+	}
+
+	turn.finalize()
+	if got := len(session.Messages()); got != 0 {
+		t.Fatalf("messages before completion = %d, want 0", got)
+	}
+
+	turn.completed = true
+	turn.finalize()
+	turn.finalize()
+	if got := len(session.Messages()); got != 2 {
+		t.Fatalf("messages after double finalize = %d, want exactly 2", got)
+	}
+
+	if cloned := cloneParts(nil); cloned != nil {
+		t.Fatalf("cloneParts(nil) = %#v, want nil", cloned)
+	}
+}
+
 func TestSessionMessagesReturnsDeepCopy(t *testing.T) {
 	session := NewService(eventClient{
 		events: []llm.Event{

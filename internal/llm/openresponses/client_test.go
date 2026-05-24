@@ -1,6 +1,7 @@
 package openresponses
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -157,6 +158,50 @@ func TestClientReturnsNonSuccessStatusAsStreamFailure(t *testing.T) {
 	}
 }
 
+func TestClientReturnsMarshalRequestAndHTTPClientErrors(t *testing.T) {
+	t.Run("marshal error", func(t *testing.T) {
+		original := marshalJSON
+		marshalJSON = func(any) ([]byte, error) {
+			return nil, errors.New("marshal failed")
+		}
+		t.Cleanup(func() {
+			marshalJSON = original
+		})
+
+		_, err := NewClient("http://example.test").Stream(context.Background(), llm.Request{})
+		if err == nil || !strings.Contains(err.Error(), "marshal failed") {
+			t.Fatalf("Stream() error = %v, want marshal failure", err)
+		}
+	})
+
+	t.Run("request construction error", func(t *testing.T) {
+		_, err := NewClient("http://[::1").Stream(context.Background(), llm.Request{})
+		if err == nil {
+			t.Fatalf("Stream() error = nil, want request construction error")
+		}
+	})
+
+	t.Run("http client error", func(t *testing.T) {
+		client := NewClient("http://example.test")
+		client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("transport failed")
+		})}
+
+		_, err := client.Stream(context.Background(), llm.Request{})
+		if err == nil || !strings.Contains(err.Error(), "transport failed") {
+			t.Fatalf("Stream() error = %v, want transport failure", err)
+		}
+	})
+}
+
+func TestClientBuildsResponsesURLForRelativeBase(t *testing.T) {
+	client := NewClient("relative/proxy")
+
+	if got := client.responsesURL(); got != "relative/proxy/v1/responses" {
+		t.Fatalf("responsesURL() = %q, want relative fallback", got)
+	}
+}
+
 func TestClientIgnoresCommentsAndMapsMultilineFailedEvents(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -190,6 +235,49 @@ func TestClientIgnoresCommentsAndMapsMultilineFailedEvents(t *testing.T) {
 	}
 }
 
+func TestClientDispatchesPartialFrameAtEOFAndPostDoneEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"partial"}`)
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventTextDelta || event.Delta != "partial" {
+		t.Fatalf("first event = %#v, want partial text", event)
+	}
+	if _, nextErr := stream.Next(); !errors.Is(nextErr, io.EOF) {
+		t.Fatalf("second Next() error = %v, want EOF", nextErr)
+	}
+
+	doneServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer doneServer.Close()
+
+	doneStream, err := NewClient(doneServer.URL).Stream(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer doneStream.Close()
+	if _, err := doneStream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("first done Next() error = %v, want EOF", err)
+	}
+	if _, err := doneStream.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("post-done Next() error = %v, want EOF", err)
+	}
+}
+
 func TestClientReturnsInvalidStreamJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -207,6 +295,31 @@ func TestClientReturnsInvalidStreamJSON(t *testing.T) {
 
 	if _, err := stream.Next(); err == nil {
 		t.Fatalf("Next() error = nil, want JSON error")
+	}
+}
+
+func TestClientSkipsEmptyFinalTextAndMalformedCompletedItems(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"text":""}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"user","content":[{"type":"output_text","text":"skip"}]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"id":"msg_2","type":"message","status":"completed","role":"assistant","content":"not-array"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":4,"response":{"id":"resp_1"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventCompleted {
+		t.Fatalf("event = %#v, want only completed event", event)
 	}
 }
 
@@ -421,6 +534,20 @@ func TestClientMapsPriorReasoningIntoInput(t *testing.T) {
 	}
 }
 
+func TestOpenResponsesInputSkipsEmptyNonAssistantMessages(t *testing.T) {
+	input := openResponsesInput([]llm.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "hidden"}}},
+		llm.NewTextMessage(llm.RoleUser, "visible"),
+	})
+
+	if len(input) != 1 {
+		t.Fatalf("input count = %d, want only visible message: %#v", len(input), input)
+	}
+	if input[0]["content"] != "visible" {
+		t.Fatalf("input = %#v, want visible message", input)
+	}
+}
+
 func TestOutputItemPartExtractsReasoningContentAndSkipsMalformedSummary(t *testing.T) {
 	part := outputItemPart(map[string]any{
 		"item": map[string]any{
@@ -447,6 +574,55 @@ func TestOutputItemPartExtractsReasoningContentAndSkipsMalformedSummary(t *testi
 	}
 	if len(part.Summary) != 1 || part.Summary[0] != "summary text" {
 		t.Fatalf("summary = %#v, want one summary text", part.Summary)
+	}
+}
+
+func TestOutputItemPartHandlesNonArraySummary(t *testing.T) {
+	part := outputItemPart(map[string]any{
+		"item": map[string]any{
+			"type":    "reasoning",
+			"summary": "not-array",
+		},
+	})
+
+	if part.Type != llm.PartReasoning {
+		t.Fatalf("part type = %q, want reasoning", part.Type)
+	}
+	if part.Summary != nil {
+		t.Fatalf("summary = %#v, want nil", part.Summary)
+	}
+}
+
+func TestStreamInitializesNilTextSeenAndHandlesIntFields(t *testing.T) {
+	s := &stream{}
+
+	event, ok, err := s.mapPayload(map[string]any{
+		"type":          "response.output_text.done",
+		"item_id":       "msg_1",
+		"output_index":  1,
+		"content_index": 2,
+		"text":          "Hello",
+	})
+	if err != nil || !ok {
+		t.Fatalf("mapPayload() = %#v, %v, %v; want event", event, ok, err)
+	}
+	if event.Type != llm.EventTextDelta || event.Delta != "Hello" {
+		t.Fatalf("event = %#v, want text delta", event)
+	}
+	if !s.textSeen["msg_1/1/2"] {
+		t.Fatalf("textSeen = %#v, want int-valued content key marked", s.textSeen)
+	}
+}
+
+func TestStreamNextReturnsReadErrors(t *testing.T) {
+	s := &stream{
+		body:   io.NopCloser(strings.NewReader("")),
+		reader: bufio.NewReader(errReader{}),
+	}
+
+	_, err := s.Next()
+	if err == nil || !strings.Contains(err.Error(), "read failed") {
+		t.Fatalf("Next() error = %v, want read failure", err)
 	}
 }
 
@@ -538,4 +714,16 @@ func requireMap(t *testing.T, value any, name string) map[string]any {
 		t.Fatalf("%s = %#v, want map[string]any", name, value)
 	}
 	return typed
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) {
+	return 0, errors.New("read failed")
 }
