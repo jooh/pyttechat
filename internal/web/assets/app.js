@@ -61,7 +61,7 @@
     if (!assistant) {
       return false;
     }
-    if (assistant.text.textContent) {
+    if (assistant.text.textContent || assistant.text.innerHTML) {
       return true;
     }
     const reasoning = assistant.article.querySelector('.reasoning-content');
@@ -78,13 +78,25 @@
     label.textContent = role;
 
     const messageText = document.createElement('div');
-    messageText.className = 'message-text';
+    messageText.className = role === 'assistant' ? 'message-text markdown-body' : 'message-text message-plain';
     messageText.textContent = text || '';
 
     article.append(label, messageText);
     messages.append(article);
     scrollToBottom(true);
     return { article, text: messageText };
+  }
+
+  function assignMessageIDs(user, assistant, turn) {
+    if (turn.user_message_id) {
+      user.article.id = `message-${turn.user_message_id}`;
+      user.article.dataset.messageId = turn.user_message_id;
+    }
+    if (turn.assistant_message_id) {
+      assistant.article.id = `message-${turn.assistant_message_id}`;
+      assistant.article.dataset.messageId = turn.assistant_message_id;
+      assistant.text.id = `message-body-${turn.assistant_message_id}`;
+    }
   }
 
   function ensureReasoning(article) {
@@ -219,13 +231,18 @@
       clearStreamErrorTimer();
     };
 
-    currentSource.addEventListener('text', function (event) {
+    currentSource.addEventListener('html', function (event) {
       if (currentTurn !== turn) {
         return;
       }
       clearStreamErrorTimer();
       const data = JSON.parse(event.data);
-      assistant.text.textContent += data.delta || '';
+      if (data.assistant_message_id && !assistant.article.dataset.messageId) {
+        assistant.article.id = `message-${data.assistant_message_id}`;
+        assistant.article.dataset.messageId = data.assistant_message_id;
+        assistant.text.id = `message-body-${data.assistant_message_id}`;
+      }
+      assistant.text.insertAdjacentHTML('beforeend', data.html || '');
       scrollToBottom(false);
     });
 
@@ -239,11 +256,15 @@
       scrollToBottom(false);
     });
 
-    currentSource.addEventListener('done', function () {
+    currentSource.addEventListener('done', function (event) {
       if (currentTurn !== turn) {
         return;
       }
       clearStreamErrorTimer();
+      const data = JSON.parse(event.data);
+      if (typeof data.html === 'string') {
+        assistant.text.innerHTML = data.html;
+      }
       assistant.article.classList.add('message-complete');
       if (!assistantHasContent(assistant)) {
         removeMessage(assistant);
@@ -297,6 +318,7 @@
 
     try {
       const turn = await submitPrompt(text);
+      assignMessageIDs(user, assistant, turn);
       subscribe(turn, user, assistant);
       setSubmitting(true);
     } catch (error) {

@@ -524,11 +524,18 @@ func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
 	if got := eventsResponse.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
 		t.Fatalf("GET turn events Content-Type = %q, want text/event-stream", got)
 	}
-	if got := textFromServedSSE(t, eventsBody); got != "Echo: hello from browser" {
-		t.Fatalf("streamed text = %q, want fake proxy echo", got)
+	if got := htmlFromServedSSE(t, eventsBody); !strings.Contains(got, "<p>Echo: hello from browser</p>") {
+		t.Fatalf("streamed html = %q, want fake proxy echo", got)
 	}
-	if len(servedSSEData(t, eventsBody, "done")) == 0 {
+	if len(servedSSEData(t, eventsBody, "text")) != 0 {
+		t.Fatalf("SSE body = %q, did not expect assistant text events", eventsBody)
+	}
+	doneHTML := doneHTMLFromServedSSE(t, eventsBody)
+	if doneHTML == "" {
 		t.Fatalf("SSE body = %q, want done event", eventsBody)
+	}
+	if !strings.Contains(doneHTML, "<p>Echo: hello from browser</p>") {
+		t.Fatalf("done html = %q, want fake proxy echo", doneHTML)
 	}
 
 	proxyMu.Lock()
@@ -988,20 +995,36 @@ func csrfFromServedHTML(body string) string {
 	return body[start : start+end]
 }
 
-func textFromServedSSE(t *testing.T, body string) string {
+func htmlFromServedSSE(t *testing.T, body string) string {
 	t.Helper()
 
-	var text strings.Builder
-	for _, data := range servedSSEData(t, body, "text") {
+	var html strings.Builder
+	for _, data := range servedSSEData(t, body, "html") {
 		var payload struct {
-			Delta string `json:"delta"`
+			HTML string `json:"html"`
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			t.Fatalf("decode text SSE data error = %v; data = %q", err, data)
+			t.Fatalf("decode html SSE data error = %v; data = %q", err, data)
 		}
-		text.WriteString(payload.Delta)
+		html.WriteString(payload.HTML)
 	}
-	return text.String()
+	return html.String()
+}
+
+func doneHTMLFromServedSSE(t *testing.T, body string) string {
+	t.Helper()
+
+	data := servedSSEData(t, body, "done")
+	if len(data) == 0 {
+		return ""
+	}
+	var payload struct {
+		HTML string `json:"html"`
+	}
+	if err := json.Unmarshal([]byte(data[len(data)-1]), &payload); err != nil {
+		t.Fatalf("decode done SSE data error = %v; data = %q", err, data[len(data)-1])
+	}
+	return payload.HTML
 }
 
 func servedSSEData(t *testing.T, body, eventName string) []string {

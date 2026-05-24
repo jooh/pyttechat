@@ -312,15 +312,23 @@ func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	}
 
 	frames := parseSSE(t, body)
-	assertFrameEvents(t, frames, []string{"reasoning", "text", "text", "done"})
+	assertFrameEvents(t, frames, []string{"reasoning", "html", "done"})
 	if !hasFrame(frames, "reasoning", `"delta":"think"`) {
 		t.Fatalf("SSE frames = %#v, want reasoning frame", frames)
 	}
-	if !hasFrame(frames, "text", `"delta":"hel"`) || !hasFrame(frames, "text", `"delta":"lo"`) {
-		t.Fatalf("SSE frames = %#v, want streamed text chunks", frames)
+	if hasEvent(frames, "text") {
+		t.Fatalf("SSE frames = %#v, did not expect assistant text events", frames)
+	}
+	html := decodeHTMLFrame(t, frames[1])
+	if !strings.Contains(html.HTML, "<p>hello</p>") {
+		t.Fatalf("html frame = %#v, want rendered paragraph", html)
 	}
 	if !hasFrame(frames, "done", `"response_id":"dummy-response-1"`) {
 		t.Fatalf("SSE frames = %#v, want done frame", frames)
+	}
+	done := decodeDoneFrame(t, frames[2])
+	if !strings.Contains(done.HTML, "<p>hello</p>") {
+		t.Fatalf("done frame = %#v, want final rendered HTML", done)
 	}
 
 	requests := llmClient.Requests()
@@ -359,10 +367,10 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
 	}
 
-	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial"}
+	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial\n\n"}
 	frame := readSSEFrame(t, bufio.NewReader(response.Body))
-	if frame.Event != "text" {
-		t.Fatalf("first frame = %#v, want text", frame)
+	if frame.Event != "html" {
+		t.Fatalf("first frame = %#v, want html", frame)
 	}
 	if frame.ID == "" {
 		t.Fatalf("first frame = %#v, want event id", frame)
@@ -392,8 +400,8 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	}
 	frames := parseSSE(t, body)
 	assertFrameEvents(t, frames, []string{"done"})
-	if hasFrame(frames, "text", `"delta":"partial"`) {
-		t.Fatalf("replay body = %q, did not expect already acknowledged text event", body)
+	if hasEvent(frames, "text") || hasFrame(frames, "html", "partial") {
+		t.Fatalf("replay body = %q, did not expect already acknowledged assistant content event", body)
 	}
 	if !hasFrame(frames, "done", `"response_id":"resp_done"`) {
 		t.Fatalf("replay body = %q, want done event after disconnected subscriber", body)
@@ -411,10 +419,10 @@ func TestTurnJobDisconnectsSlowSubscriberWithoutLosingReplay(t *testing.T) {
 	}
 
 	for i := 0; i < 130; i++ {
-		turn.emit("text", deltaEvent{
+		turn.emit("html", htmlEvent{
 			TurnID:             turn.id,
 			AssistantMessageID: turn.assistantMessageID,
-			Delta:              itoa(i),
+			HTML:               template.HTML(itoa(i)),
 		})
 	}
 
@@ -681,12 +689,12 @@ func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 }
 
 func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
-	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}})}))
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}})}))
 	defer server.Close()
 
 	client := testHTTPClient(t)
 	csrfToken := fetchCSRFToken(t, client, server.URL)
-	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	turn := createTurn(t, client, server.URL, csrfToken, "<hello>")
 	response, body := get(t, client, server.URL+turn.StreamURL)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -701,11 +709,139 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	if len(response.Cookies()) != 0 {
 		t.Fatalf("Set-Cookie count = %d, want existing session reused without a new cookie", len(response.Cookies()))
 	}
-	if !strings.Contains(body, `message-user`) || !strings.Contains(body, `hello`) {
-		t.Fatalf("GET / body = %q, want rendered user message", body)
+	if !strings.Contains(body, `message-user`) || !strings.Contains(body, `&lt;hello&gt;`) {
+		t.Fatalf("GET / body = %q, want escaped user message", body)
 	}
-	if !strings.Contains(body, `message-assistant`) || !strings.Contains(body, `answer`) {
-		t.Fatalf("GET / body = %q, want rendered assistant message", body)
+	if strings.Contains(body, `<hello>`) {
+		t.Fatalf("GET / body = %q, did not expect raw user HTML", body)
+	}
+	if !strings.Contains(body, `message-assistant`) || !strings.Contains(body, `<strong>answer</strong>`) {
+		t.Fatalf("GET / body = %q, want rendered assistant markdown", body)
+	}
+}
+
+func TestTurnStreamsHTMLBlocksAndFinalFullRender(t *testing.T) {
+	llmClient := dummy.NewClient(dummy.Turn{
+		TextChunks: []string{"first\n\n", "second"},
+	})
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	frames := parseSSE(t, body)
+	assertFrameEvents(t, frames, []string{"html", "html", "done"})
+	first := decodeHTMLFrame(t, frames[0])
+	second := decodeHTMLFrame(t, frames[1])
+	done := decodeDoneFrame(t, frames[2])
+	if !strings.Contains(first.HTML, "<p>first</p>") {
+		t.Fatalf("first html frame = %#v, want first paragraph", first)
+	}
+	if !strings.Contains(second.HTML, "<p>second</p>") {
+		t.Fatalf("second html frame = %#v, want second paragraph", second)
+	}
+	if !strings.Contains(done.HTML, "<p>first</p>") || !strings.Contains(done.HTML, "<p>second</p>") {
+		t.Fatalf("done frame = %#v, want complete rendered message", done)
+	}
+	if hasEvent(frames, "text") {
+		t.Fatalf("frames = %#v, did not expect assistant text events", frames)
+	}
+}
+
+func TestTurnStreamingBuffersFenceUntilClosed(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	_ = llmClient.waitForContext(t)
+
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	reader := bufio.NewReader(response.Body)
+	frames := make(chan sseFrame, 1)
+	go func() {
+		frames <- readSSEFrame(t, reader)
+	}()
+
+	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "```go\nfmt.Println(1)\n"}
+	select {
+	case frame := <-frames:
+		t.Fatalf("received frame before closing fence: %#v", frame)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "```\n"}
+	frame := waitSSEFrame(t, frames)
+	if frame.Event != "html" {
+		t.Fatalf("frame after closing fence = %#v, want html", frame)
+	}
+	html := decodeHTMLFrame(t, frame)
+	if !strings.Contains(html.HTML, `class="chroma"`) || !strings.Contains(html.HTML, "fmt") {
+		t.Fatalf("html frame = %#v, want highlighted fenced code", html)
+	}
+
+	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
+	frame = readSSEFrame(t, reader)
+	if frame.Event != "done" {
+		t.Fatalf("terminal frame = %#v, want done", frame)
+	}
+}
+
+func TestTurnStreamingSanitizesUnsafeModelHTML(t *testing.T) {
+	llmClient := dummy.NewClient(dummy.Turn{
+		TextChunks: []string{`<script>alert(1)</script>
+
+[ok](https://example.com)
+
+<a href="javascript:alert(1)" onclick="bad">bad</a>`},
+	})
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	frames := parseSSE(t, body)
+	for _, frame := range frames {
+		if frame.Event != "html" {
+			continue
+		}
+		payload := decodeHTMLFrame(t, frame)
+		assertSafeRenderedHTML(t, payload.HTML)
+	}
+	done := decodeDoneFrame(t, frames[len(frames)-1])
+	assertSafeRenderedHTML(t, done.HTML)
+	if !strings.Contains(done.HTML, `href="https://example.com"`) {
+		t.Fatalf("done HTML = %q, want safe markdown link", done.HTML)
 	}
 }
 
@@ -774,7 +910,7 @@ func TestTurnEventsStopsOnReplayAndUpdateWriteErrors(t *testing.T) {
 	t.Run("replay write error", func(t *testing.T) {
 		server := NewServer(Options{Client: dummy.NewClient()})
 		turn := newTestTurnJob(t)
-		turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "hello"})
+		turn.emit("html", htmlEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, HTML: "hello"})
 		server.sessions["sess_test"] = &browserSession{
 			id:    "sess_test",
 			csrf:  "csrf_test",
@@ -811,7 +947,7 @@ func TestTurnEventsStopsOnReplayAndUpdateWriteErrors(t *testing.T) {
 			close(done)
 		}()
 		waitForSubscriber(t, turn)
-		turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "hello"})
+		turn.emit("html", htmlEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, HTML: "hello"})
 
 		select {
 		case <-done:
@@ -825,7 +961,7 @@ func TestViewMessagesSkipsNonTextMessages(t *testing.T) {
 	messages := viewMessages([]llm.Message{
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "hidden"}}},
 		llm.NewTextMessage(llm.RoleUser, "visible"),
-	})
+	}, NewServer(Options{Client: dummy.NewClient()}).markdown)
 
 	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Text != "visible" {
 		t.Fatalf("viewMessages = %#v, want only visible text message", messages)
@@ -847,17 +983,17 @@ func TestStreamHelpersHandleInvalidInputsAndWriterErrors(t *testing.T) {
 	}
 
 	writer := &failingHTTPWriter{header: http.Header{}, failAt: 0}
-	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "text", Data: []byte(`{}`)}); err == nil {
+	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "html", Data: []byte(`{}`)}); err == nil {
 		t.Fatalf("writeSSE error = nil, want writer error")
 	}
 
 	writer = &failingHTTPWriter{header: http.Header{}, failAt: 1}
-	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "text", Data: []byte(`{}`)}); err == nil {
+	if err := writeSSE(writer, writer, streamEvent{ID: 1, Name: "html", Data: []byte(`{}`)}); err == nil {
 		t.Fatalf("writeSSE event error = nil, want writer error")
 	}
 
 	writer = &failingHTTPWriter{header: http.Header{}, failAt: 1}
-	if err := writeSSE(writer, writer, streamEvent{Name: "text", Data: []byte(`{}`)}); err == nil {
+	if err := writeSSE(writer, writer, streamEvent{Name: "html", Data: []byte(`{}`)}); err == nil {
 		t.Fatalf("writeSSE data error = nil, want writer error")
 	}
 }
@@ -949,7 +1085,7 @@ func TestTurnJobTerminalEmitNoOpsAndAbortContextDone(t *testing.T) {
 		updates <- streamEvent{}
 	}
 	turn.emitTerminal("done", doneEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID})
-	turn.emit("text", deltaEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, Delta: "ignored"})
+	turn.emit("html", htmlEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID, HTML: "ignored"})
 	turn.emitTerminal("done", doneEvent{TurnID: turn.id, AssistantMessageID: turn.assistantMessageID})
 
 	replay, _, terminal := turn.subscribe(0)
@@ -1169,6 +1305,83 @@ func hasFrame(frames []sseFrame, eventName, dataSubstring string) bool {
 		}
 	}
 	return false
+}
+
+func hasEvent(frames []sseFrame, eventName string) bool {
+	for _, frame := range frames {
+		if frame.Event == eventName {
+			return true
+		}
+	}
+	return false
+}
+
+type testHTMLPayload struct {
+	TurnID             string `json:"turn_id"`
+	AssistantMessageID string `json:"assistant_message_id"`
+	HTML               string `json:"html"`
+}
+
+type testDonePayload struct {
+	TurnID             string     `json:"turn_id"`
+	AssistantMessageID string     `json:"assistant_message_id"`
+	ResponseID         string     `json:"response_id"`
+	Usage              *llm.Usage `json:"usage,omitempty"`
+	HTML               string     `json:"html"`
+}
+
+func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {
+	t.Helper()
+
+	if frame.Event != "html" {
+		t.Fatalf("frame event = %q, want html: %#v", frame.Event, frame)
+	}
+	var payload testHTMLPayload
+	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
+		t.Fatalf("decode html frame error = %v; frame = %#v", err, frame)
+	}
+	if payload.TurnID == "" || payload.AssistantMessageID == "" {
+		t.Fatalf("html payload = %#v, want ids", payload)
+	}
+	return payload
+}
+
+func decodeDoneFrame(t *testing.T, frame sseFrame) testDonePayload {
+	t.Helper()
+
+	if frame.Event != "done" {
+		t.Fatalf("frame event = %q, want done: %#v", frame.Event, frame)
+	}
+	var payload testDonePayload
+	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
+		t.Fatalf("decode done frame error = %v; frame = %#v", err, frame)
+	}
+	if payload.TurnID == "" || payload.AssistantMessageID == "" {
+		t.Fatalf("done payload = %#v, want ids", payload)
+	}
+	return payload
+}
+
+func assertSafeRenderedHTML(t *testing.T, html string) {
+	t.Helper()
+
+	for _, unsafe := range []string{"<script", "alert(1)", "onclick", "javascript:"} {
+		if strings.Contains(html, unsafe) {
+			t.Fatalf("rendered HTML = %q, did not expect unsafe substring %q", html, unsafe)
+		}
+	}
+}
+
+func waitSSEFrame(t *testing.T, frames <-chan sseFrame) sseFrame {
+	t.Helper()
+
+	select {
+	case frame := <-frames:
+		return frame
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for SSE frame")
+		return sseFrame{}
+	}
 }
 
 func assertFrameEvents(t *testing.T, frames []sseFrame, want []string) {

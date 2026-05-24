@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
+	"example.com/llm-chat-web/internal/markdown"
 )
 
 const (
@@ -43,6 +45,7 @@ type Server struct {
 	reasoningEffort string
 	cookieSecure    bool
 	template        *template.Template
+	markdown        *markdown.Renderer
 	assets          http.Handler
 
 	mu       sync.Mutex
@@ -59,6 +62,7 @@ type browserSession struct {
 
 func NewServer(opts Options) *Server {
 	assets, _ := fs.Sub(embeddedFiles, "assets")
+	renderer := markdown.NewRenderer()
 	tmpl := template.Must(template.ParseFS(embeddedFiles, "templates/*.html"))
 	return &Server{
 		client:          opts.Client,
@@ -66,6 +70,7 @@ func NewServer(opts Options) *Server {
 		reasoningEffort: opts.ReasoningEffort,
 		cookieSecure:    opts.CookieSecure,
 		template:        tmpl,
+		markdown:        renderer,
 		assets:          http.StripPrefix("/assets/", http.FileServer(http.FS(assets))),
 		sessions:        map[string]*browserSession{},
 	}
@@ -95,7 +100,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	data := pageData{
 		CSRFToken: session.csrf,
-		Messages:  viewMessages(session.chat.Messages()),
+		Messages:  viewMessages(session.chat.Messages(), s.markdown),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.template.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -334,19 +339,29 @@ type pageData struct {
 type viewMessage struct {
 	Role string
 	Text string
+	HTML template.HTML
 }
 
-func viewMessages(messages []llm.Message) []viewMessage {
+func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
 	out := make([]viewMessage, 0, len(messages))
 	for _, message := range messages {
 		text := message.Text()
 		if text == "" {
 			continue
 		}
-		out = append(out, viewMessage{
+		view := viewMessage{
 			Role: string(message.Role),
 			Text: text,
-		})
+		}
+		if message.Role == llm.RoleAssistant {
+			html, err := renderer.Render(text)
+			if err != nil {
+				log.Printf("markdown render failed for stored assistant message: %v", err)
+				html = escapedPlainTextHTML(text)
+			}
+			view.HTML = html
+		}
+		out = append(out, view)
 	}
 	return out
 }
@@ -462,6 +477,8 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 	}
 	defer stream.Close()
 
+	renderer := markdown.NewRenderer()
+	var streamer markdown.BlockStreamer
 	completed := false
 	for {
 		event, err := stream.Next()
@@ -478,11 +495,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 
 		switch event.Type {
 		case llm.EventTextDelta:
-			j.emit("text", deltaEvent{
-				TurnID:             j.id,
-				AssistantMessageID: j.assistantMessageID,
-				Delta:              event.Delta,
-			})
+			j.emitRenderedBlocks(renderer, streamer.Add(event.Delta))
 		case llm.EventReasoningDelta:
 			j.emit("reasoning", deltaEvent{
 				TurnID:             j.id,
@@ -490,15 +503,45 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				Delta:              event.Delta,
 			})
 		case llm.EventCompleted:
+			j.emitRenderedBlocks(renderer, streamer.Flush())
+			html, err := renderer.Render(streamer.FullMarkdown())
+			if err != nil {
+				log.Printf("markdown final render failed for turn %s: %v", j.id, err)
+				html = escapedPlainTextHTML(streamer.FullMarkdown())
+			}
 			j.emitTerminal("done", doneEvent{
 				TurnID:             j.id,
 				AssistantMessageID: j.assistantMessageID,
 				ResponseID:         event.ResponseID,
 				Usage:              event.Usage,
+				HTML:               html,
 			})
 			return
 		}
 	}
+}
+
+func (j *turnJob) emitRenderedBlocks(renderer *markdown.Renderer, blocks []string) {
+	for _, block := range blocks {
+		html, err := renderer.RenderBlock(block)
+		if err != nil {
+			log.Printf("markdown block render failed for turn %s: %v", j.id, err)
+			html = escapedPlainTextHTML(block)
+		}
+		j.emit("html", htmlEvent{
+			TurnID:             j.id,
+			AssistantMessageID: j.assistantMessageID,
+			HTML:               html,
+		})
+	}
+}
+
+func escapedPlainTextHTML(text string) template.HTML {
+	escaped := template.HTMLEscapeString(text)
+	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
+	escaped = strings.ReplaceAll(escaped, "\r", "\n")
+	escaped = strings.ReplaceAll(escaped, "\n", "<br>\n")
+	return template.HTML(escaped)
 }
 
 func (j *turnJob) emitError(err error) {
@@ -651,11 +694,18 @@ type deltaEvent struct {
 	Delta              string `json:"delta"`
 }
 
+type htmlEvent struct {
+	TurnID             string        `json:"turn_id"`
+	AssistantMessageID string        `json:"assistant_message_id"`
+	HTML               template.HTML `json:"html"`
+}
+
 type doneEvent struct {
-	TurnID             string     `json:"turn_id"`
-	AssistantMessageID string     `json:"assistant_message_id"`
-	ResponseID         string     `json:"response_id"`
-	Usage              *llm.Usage `json:"usage,omitempty"`
+	TurnID             string        `json:"turn_id"`
+	AssistantMessageID string        `json:"assistant_message_id"`
+	ResponseID         string        `json:"response_id"`
+	Usage              *llm.Usage    `json:"usage,omitempty"`
+	HTML               template.HTML `json:"html"`
 }
 
 type abortedEvent struct {

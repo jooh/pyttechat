@@ -71,7 +71,6 @@ textarea {
   border-radius: 8px;
   background: var(--assistant);
   padding: 12px 14px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -110,6 +109,125 @@ textarea {
 
 .message-complete .message-text:empty::after {
   content: none;
+}
+
+.message-plain {
+  white-space: pre-wrap;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body table {
+  margin: 0 0 0.85em;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4em;
+}
+
+.markdown-body li + li {
+  margin-top: 0.2em;
+}
+
+.markdown-body a {
+  color: var(--accent);
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow-wrap: normal;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  background: #eef2ef;
+  font-weight: 650;
+}
+
+.markdown-body code {
+  border-radius: 4px;
+  background: #eef2ef;
+  padding: 0.12em 0.28em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f1f4f2;
+  padding: 10px 12px;
+}
+
+.markdown-body pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+  padding-left: 12px;
+}
+
+.markdown-body input[type="checkbox"] {
+  margin: 0 0.45em 0 0;
+  vertical-align: -0.1em;
+}
+
+.markdown-body .chroma {
+  color: #1f2328;
+}
+
+.markdown-body .chroma .k,
+.markdown-body .chroma .kd,
+.markdown-body .chroma .kn {
+  color: #8250df;
+}
+
+.markdown-body .chroma .s,
+.markdown-body .chroma .s2,
+.markdown-body .chroma .sc {
+  color: #0a3069;
+}
+
+.markdown-body .chroma .c,
+.markdown-body .chroma .c1,
+.markdown-body .chroma .cm {
+  color: #687076;
+  font-style: italic;
+}
+
+.markdown-body .chroma .nf,
+.markdown-body .chroma .nx {
+  color: #0550ae;
+}
+
+.markdown-body .chroma .mi,
+.markdown-body .chroma .kc {
+  color: #953800;
 }
 
 .reasoning {

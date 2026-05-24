@@ -20,14 +20,23 @@ Browser
 - Postgres is the system of record for users, sessions, conversations, messages, and migrations.
 - The frontend should stay server-rendered with minimal plain JavaScript.
 - Avoid Node, SPA frameworks, bundlers, and complex frontend state unless future requirements force that tradeoff.
-- Later JavaScript should be small and vendored only where useful for `EventSource`, markdown rendering, copy buttons, and scroll behavior.
+- Later JavaScript should be small and vendored only where useful for `EventSource`, copy buttons, and scroll behavior.
 - LLM output is untrusted content and must be sanitized before rendering.
+- Markdown parsing and sanitization are server-owned. The browser receives sanitized HTML, never raw assistant markdown deltas.
 
 ## Boundaries
 
 The chat web app owns login, secure browser sessions, conversation history, message persistence, and the streaming bridge to the browser. It does not own tool execution, MCP server coordination, model routing, token accounting, or provider-specific LLM behavior.
 
 The LLM proxy API owns tool calls, MCP integration, model routing, token accounting, provider access, and related policy enforcement.
+
+## Markdown Streaming
+
+Assistant text from the LLM stream is buffered into Markdown block boundaries on the server. Completed blocks are rendered with goldmark, GitHub Flavored Markdown extensions, and Chroma class-based syntax highlighting, then sanitized with a strict bluemonday policy before they are sent to the browser as SSE `html` events.
+
+The browser appends these sanitized block fragments into the live assistant message. It does not parse Markdown and it does not receive raw assistant text events. Reasoning events remain plain text and are inserted with `textContent`.
+
+When the LLM sends the terminal completion event, the server flushes any pending Markdown, renders the full assistant message from the complete buffered Markdown, sanitizes it, and includes that final HTML in the `done` event. The browser replaces the live assistant body with `done.html`; this full-message render is the source of truth for completed assistant output.
 
 ## CLI-First Backend Plan
 

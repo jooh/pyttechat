@@ -18,11 +18,15 @@
         {{range .Messages}}
           <article class="message message-{{.Role}}">
             <div class="message-label">{{.Role}}</div>
-            <div class="message-text">{{.Text}}</div>
+            {{if .HTML}}
+              <div class="message-text markdown-body">{{.HTML}}</div>
+            {{else}}
+              <div class="message-text message-plain">{{.Text}}</div>
+            {{end}}
           </article>
         {{else}}
           <article class="message message-empty">
-            <div class="message-text">Start a conversation.</div>
+            <div class="message-text message-plain">Start a conversation.</div>
           </article>
         {{end}}
       </section>
