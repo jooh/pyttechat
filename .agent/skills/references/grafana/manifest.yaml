@@ -1,0 +1,89 @@
+name: "grafana"
+display_name: "Grafana"
+role: "Targeted reference for enterprise OAuth/OIDC edge cases, generic OAuth configuration, claim mapping, role/group mapping, token refresh, and session lifetime patterns."
+repo_path: ".agent/skills/references/grafana/repo"
+submodule_url: "https://github.com/grafana/grafana.git"
+pinned_commit: "8523124bd27317228b211568987555efda392b62"
+imported_at: "2026-05-25"
+license: "AGPL-3.0"
+
+use_for:
+  - "enterprise OAuth/OIDC edge cases"
+  - "generic OAuth configuration"
+  - "claim and role mapping"
+  - "token refresh and session lifetime patterns"
+
+do_not_use_for:
+  - "general app architecture"
+  - "frontend architecture or plugin systems"
+  - "copying source code or dependency declarations"
+
+important_paths:
+  - path: "pkg/login/social"
+    why: "Social login service and connector flow."
+  - path: "pkg/login/social/connectors"
+    why: "Generic OAuth and provider-specific claim mapping."
+  - path: "pkg/services/accesscontrol"
+    why: "Role and authorization concepts when claims map to permissions."
+  - path: "conf/defaults.ini"
+    why: "Configuration surface for auth providers."
+  - path: "conf/sample.ini"
+    why: "Documented configuration examples."
+
+avoid_paths:
+  - path: "public"
+    why: "Frontend architecture and assets are out of scope."
+  - path: "packages"
+    why: "Node package workspace is out of scope."
+  - path: "apps"
+    why: "Grafana plugin/app model is not relevant."
+  - path: "devenv"
+    why: "Development environment fixtures are not product guidance."
+
+search_recipes:
+  generic-oauth:
+    description: "Find generic OAuth connector configuration and behavior."
+    terms:
+      - "generic_oauth"
+      - "role_attribute_path"
+      - "groups_attribute_path"
+    likely_paths:
+      - "pkg/login/social/connectors"
+      - "conf"
+    avoid_paths:
+      - "public"
+  token-refresh:
+    description: "Find token refresh and session lifetime behavior."
+    terms:
+      - "refresh_token"
+      - "token_refresh"
+      - "expiry"
+    likely_paths:
+      - "pkg/login/social"
+      - "pkg/services"
+    avoid_paths:
+      - "packages"
+  claim-mapping:
+    description: "Find user, role, org, and group claim mapping."
+    terms:
+      - "roleAttribute"
+      - "OrgRole"
+      - "groups"
+    likely_paths:
+      - "pkg/login/social/connectors"
+    avoid_paths:
+      - "public"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use Grafana narrowly for OAuth/OIDC hard cases; do not use it as the general architecture template."

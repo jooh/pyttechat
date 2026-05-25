@@ -1,0 +1,91 @@
+name: "miniflux"
+display_name: "Miniflux"
+role: "Primary reference for minimal serious Go web app structure, server-rendered UI, Postgres state, migrations, configuration, packaging, tests, and OAuth/OIDC support."
+repo_path: ".agent/skills/references/miniflux/repo"
+submodule_url: "https://github.com/miniflux/v2.git"
+pinned_commit: "483da488d80292791a53d393f6a94ad17489e9f0"
+imported_at: "2026-05-25"
+license: "Apache-2.0"
+
+use_for:
+  - "minimal Go web app structure"
+  - "server-rendered UI and route organization"
+  - "Postgres storage and migrations"
+  - "configuration and packaging style"
+  - "small-app OAuth/OIDC patterns"
+
+do_not_use_for:
+  - "LLM chat product behavior"
+  - "enterprise OAuth/OIDC edge cases better covered by Grafana"
+  - "copying source code or dependency declarations"
+
+important_paths:
+  - path: "main.go"
+    why: "Application entrypoint and startup flow."
+  - path: "internal/config"
+    why: "Environment/config parsing and validation style."
+  - path: "internal/database"
+    why: "Postgres connection and migration organization."
+  - path: "internal/ui"
+    why: "Server-rendered handlers, routes, CSRF, sessions, templates, and static assets."
+  - path: "internal/oauth2"
+    why: "Small-app OAuth/OIDC provider integration."
+  - path: "packaging"
+    why: "Container and service packaging examples."
+
+avoid_paths:
+  - path: ".github"
+    why: "Upstream CI is not relevant to product implementation."
+  - path: "client"
+    why: "API client package, not the web app architecture reference."
+  - path: "contrib"
+    why: "Auxiliary integrations and examples."
+  - path: "internal/reader"
+    why: "Feed-reading domain logic unrelated to this project."
+
+search_recipes:
+  server-rendered-ui:
+    description: "Find route, handler, template, session, and CSRF patterns."
+    terms:
+      - "csrf"
+      - "session"
+      - "template"
+      - "route"
+    likely_paths:
+      - "internal/ui"
+    avoid_paths:
+      - "internal/ui/static/bin"
+  configuration:
+    description: "Find environment parsing, defaults, and validation."
+    terms:
+      - "Options"
+      - "Parse"
+      - "Validate"
+    likely_paths:
+      - "internal/config"
+    avoid_paths:
+      - "client"
+  postgres-migrations:
+    description: "Find database initialization and migration flow."
+    terms:
+      - "migration"
+      - "postgres"
+      - "schema"
+    likely_paths:
+      - "internal/database"
+    avoid_paths:
+      - "internal/reader"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use as the default implementation-shape reference, but adapt to this repo's smaller dependency and feature surface."

@@ -37,7 +37,7 @@ LLM streaming from the app to the browser uses Server-Sent Events unless future 
 
 ## Reference Implementation Guide
 
-The submodules under `third_party/reference/` are read-only inspiration. Do not copy code from them into this project.
+Reference repositories live under `.agent/skills/references/*/repo` as skill-backed read-only inspiration. They are not part of the active implementation workspace. Do not copy code from them into this project, and do not include them in broad searches, refactors, linting, formatting, or tests. Use the relevant reference skill before inspecting a reference repo, and prefer sub-agent exploration where supported.
 
 - Miniflux is the primary implementation inspiration. Use it for minimal serious Go web app structure, server-rendered UI, Postgres state, migrations, configuration style, low-dependency discipline, container packaging, testing approach, and OAuth/OIDC support in a small app.
 - Gitea is a mature Go web app reference for auth/session handling, CSRF, external auth provider modeling, user creation and account linking from external identity, per-request authorization checks, and handler/integration test organization.
@@ -45,10 +45,6 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - LibreChat is a product and behavior reference for mature LLM chat UX. Use it to understand conversation list behavior, message lifecycle, streaming response UX, multi-model/provider concepts, file/image/message rendering patterns, and admin/configuration concepts worth avoiding or simplifying. Do not copy LibreChat's frontend architecture. This project intentionally avoids a Node/React SPA architecture for now.
 - LLM is a CLI behavior reference for LLM prompt and chat workflows. Use it to understand command ergonomics, interactive chat loops, model/options UX, conversation continuation, prompt/response logging, usage metadata, fragments, schemas, and tool-call visibility. Do not copy LLM's Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration.
 - OpenResponses is the Responses API specification reference for LLM-side interoperability. Use it to understand request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations. Do not adopt its documentation-site toolchain or generated artifacts as project dependencies.
-
-## Agent Reference Skills
-
-Reference repositories may also live under `.agent/skills/references/*/repo`. These repositories are read-only reference material and are not part of the active implementation workspace. Do not include them in broad searches, refactors, linting, formatting, or tests. Use the relevant skill before inspecting a reference repo, and prefer sub-agent exploration where supported.
 
 ## Git strategy
 

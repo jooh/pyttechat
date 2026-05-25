@@ -3,15 +3,62 @@
 # Keep this file lightweight. Detailed guidance belongs in each reference skill's
 # SKILL.md and manifest.yaml.
 #
-# Example:
-# references:
-#   librechat:
-#     skill_path: .agent/skills/references/librechat/SKILL.md
-#     repo_path: .agent/skills/references/librechat/repo
-#     role: Reference implementation for self-hosted LLM chat application patterns.
-#     use_for:
-#       - chat UI
-#       - streaming responses
-#       - markdown rendering
-
-references: {}
+references:
+  miniflux:
+    skill_path: .agent/skills/references/miniflux/SKILL.md
+    repo_path: .agent/skills/references/miniflux/repo
+    role: Primary reference for minimal serious Go web app structure, server-rendered UI, Postgres state, migrations, configuration, packaging, tests, and OAuth/OIDC support.
+    use_for:
+      - minimal Go web app structure
+      - server-rendered UI
+      - Postgres and migrations
+      - configuration and packaging
+      - small-app OAuth/OIDC
+  gitea:
+    skill_path: .agent/skills/references/gitea/SKILL.md
+    repo_path: .agent/skills/references/gitea/repo
+    role: Reference for mature Go web app auth, sessions, CSRF, external auth provider modeling, account linking, per-request authorization, and handler/integration test organization.
+    use_for:
+      - auth and sessions
+      - CSRF and authorization
+      - external auth providers
+      - account linking
+      - integration tests
+  grafana:
+    skill_path: .agent/skills/references/grafana/SKILL.md
+    repo_path: .agent/skills/references/grafana/repo
+    role: Targeted reference for enterprise OAuth/OIDC edge cases, generic OAuth configuration, claim mapping, role/group mapping, token refresh, and session lifetime patterns.
+    use_for:
+      - enterprise OAuth/OIDC
+      - generic OAuth configuration
+      - claim and role mapping
+      - token refresh
+  librechat:
+    skill_path: .agent/skills/references/librechat/SKILL.md
+    repo_path: .agent/skills/references/librechat/repo
+    role: Product and UX reference for mature LLM chat behavior, conversation lifecycle, streaming response UX, multi-model/provider concepts, and rendering patterns.
+    use_for:
+      - LLM chat UX
+      - conversation lifecycle
+      - streaming response UX
+      - model/provider concepts
+      - message rendering patterns
+  llm:
+    skill_path: .agent/skills/references/llm/SKILL.md
+    repo_path: .agent/skills/references/llm/repo
+    role: CLI behavior reference for LLM prompt and chat workflows, command ergonomics, interactive loops, continuation, logging, usage metadata, fragments, schemas, and tool-call visibility.
+    use_for:
+      - CLI command ergonomics
+      - interactive chat loop
+      - conversation continuation
+      - prompt/response logging
+      - usage and tool visibility
+  openresponses:
+    skill_path: .agent/skills/references/openresponses/SKILL.md
+    repo_path: .agent/skills/references/openresponses/repo
+    role: Responses API specification reference for request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations.
+    use_for:
+      - Responses API shapes
+      - semantic streaming events
+      - tool invocation lifecycle
+      - compliance expectations

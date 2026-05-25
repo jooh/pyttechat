@@ -1,0 +1,94 @@
+name: "gitea"
+display_name: "Gitea"
+role: "Reference for mature Go web app auth, sessions, CSRF, external auth provider modeling, account linking, per-request authorization, and handler/integration test organization."
+repo_path: ".agent/skills/references/gitea/repo"
+submodule_url: "https://github.com/go-gitea/gitea.git"
+pinned_commit: "821d3c4672dc34dead382754c8857d2570f1aa38"
+imported_at: "2026-05-25"
+license: "MIT"
+
+use_for:
+  - "auth and session handling"
+  - "CSRF and per-request authorization"
+  - "external auth provider modeling"
+  - "user creation and account linking"
+  - "handler and integration test organization"
+
+do_not_use_for:
+  - "general project architecture for this smaller app"
+  - "repository hosting domain behavior"
+  - "copying source code or dependency declarations"
+
+important_paths:
+  - path: "services/auth"
+    why: "Auth service and external auth workflows."
+  - path: "services/externalaccount"
+    why: "External identity account-linking patterns."
+  - path: "modules/auth"
+    why: "Auth helpers and request authentication concepts."
+  - path: "modules/session"
+    why: "Session infrastructure reference."
+  - path: "routers/web"
+    why: "Server-rendered route and middleware organization."
+  - path: "tests/integration"
+    why: "Integration test organization for web behavior."
+
+avoid_paths:
+  - path: ".github"
+    why: "Upstream CI is not relevant."
+  - path: "web_src"
+    why: "Frontend build stack does not match this project."
+  - path: "models/repo"
+    why: "Repository-hosting domain logic is out of scope."
+  - path: "modules/git"
+    why: "Git plumbing is unrelated except for rare test organization questions."
+
+search_recipes:
+  csrf-session-auth:
+    description: "Find request auth, session, and CSRF patterns."
+    terms:
+      - "csrf"
+      - "session"
+      - "Auth"
+    likely_paths:
+      - "modules/auth"
+      - "modules/session"
+      - "routers/web"
+    avoid_paths:
+      - "web_src"
+  external-auth:
+    description: "Find external auth provider and account-linking flows."
+    terms:
+      - "ExternalLoginUser"
+      - "OAuth2"
+      - "OpenID"
+    likely_paths:
+      - "services/auth"
+      - "services/externalaccount"
+      - "models/auth"
+    avoid_paths:
+      - "models/repo"
+  integration-tests:
+    description: "Find handler/integration test patterns."
+    terms:
+      - "MakeRequest"
+      - "session"
+      - "csrf"
+    likely_paths:
+      - "tests/integration"
+    avoid_paths:
+      - "tests/e2e"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use for mature auth and test ideas, but scale patterns down to this project's minimal app shape."

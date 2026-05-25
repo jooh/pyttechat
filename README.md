@@ -119,7 +119,7 @@ make ci
 
 The Makefile installs pinned Go tools into `.bin/` when needed.
 
-## Reference Submodules
+## Reference Skills
 
 Initialize the read-only reference implementations after cloning:
 
@@ -127,4 +127,4 @@ Initialize the read-only reference implementations after cloning:
 git submodule update --init --depth 1 --recursive
 ```
 
-See `third_party/reference/README.md` and `AGENTS.md` before using the references.
+Reference repositories live under `.agent/skills/references/*/repo` and are accessed through their concrete skills and `.agent/skills/references/registry.yaml`. See `AGENTS.md` before using the references.

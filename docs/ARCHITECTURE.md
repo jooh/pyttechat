@@ -53,6 +53,8 @@ Near-term CLI work should focus on backend-facing behavior:
 
 ## References
 
+Reference repositories are checked out as skill-backed read-only submodules under `.agent/skills/references/*/repo`. Use the relevant reference skill before inspecting one, and do not include reference repos in broad searches, linting, formatting, tests, or refactors.
+
 Miniflux is the primary implementation-shape reference for a small, serious Go web app with server-rendered UI, Postgres state, migrations, configuration, packaging, tests, and OAuth/OIDC support.
 
 Gitea is a mature Go web app reference for auth, sessions, CSRF, external auth provider modeling, account linking, per-request authorization, and handler/integration test organization.

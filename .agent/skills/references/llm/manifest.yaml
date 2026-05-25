@@ -1,0 +1,96 @@
+name: "llm"
+display_name: "LLM"
+role: "CLI behavior reference for LLM prompt and chat workflows, command ergonomics, interactive loops, continuation, logging, usage metadata, fragments, schemas, and tool-call visibility."
+repo_path: ".agent/skills/references/llm/repo"
+submodule_url: "https://github.com/simonw/llm.git"
+pinned_commit: "be27b91aa83142ee080c467976dc47fa4b5fb7ec"
+imported_at: "2026-05-25"
+license: "Apache-2.0"
+
+use_for:
+  - "LLM CLI command ergonomics"
+  - "interactive chat loop behavior"
+  - "conversation continuation concepts"
+  - "prompt/response logging UX"
+  - "usage metadata and tool-call visibility"
+
+do_not_use_for:
+  - "Python implementation architecture"
+  - "SQLite schema adoption"
+  - "plugin runtime or provider orchestration"
+  - "local model orchestration"
+
+important_paths:
+  - path: "llm/cli.py"
+    why: "CLI command behavior and option ergonomics."
+  - path: "llm/models.py"
+    why: "Prompt/chat abstractions and response handling concepts."
+  - path: "llm/tools.py"
+    why: "Tool-call visibility concepts."
+  - path: "llm/templates.py"
+    why: "Prompt template behavior concepts."
+  - path: "tests/test_chat.py"
+    why: "Interactive chat behavior tests."
+  - path: "tests/test_cli_options.py"
+    why: "CLI option behavior tests."
+
+avoid_paths:
+  - path: "llm/default_plugins"
+    why: "Provider implementations and plugin defaults are out of scope."
+  - path: "docs"
+    why: "Documentation site content is secondary to behavior tests and CLI code."
+  - path: "tests/cassettes"
+    why: "Recorded external interactions are not useful for deterministic local tests."
+  - path: "llm/embeddings.py"
+    why: "Embedding behavior is out of scope."
+
+search_recipes:
+  cli-options:
+    description: "Find command flags, prompt options, and ergonomics."
+    terms:
+      - "click.option"
+      - "model"
+      - "system"
+    likely_paths:
+      - "llm/cli.py"
+      - "tests/test_cli_options.py"
+    avoid_paths:
+      - "llm/default_plugins"
+  interactive-chat:
+    description: "Find interactive chat loop and continuation behavior."
+    terms:
+      - "chat"
+      - "conversation"
+      - "continue"
+    likely_paths:
+      - "llm/cli.py"
+      - "llm/models.py"
+      - "tests/test_chat.py"
+    avoid_paths:
+      - "tests/cassettes"
+  tool-visibility:
+    description: "Find tool call display and logging behavior."
+    terms:
+      - "tool"
+      - "ToolCall"
+      - "usage"
+    likely_paths:
+      - "llm/tools.py"
+      - "llm/models.py"
+      - "tests"
+    avoid_paths:
+      - "llm/default_plugins"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use for CLI behavior and tests only; do not copy Python implementation or provider/plugin architecture."

@@ -1,24 +1,24 @@
-[submodule "third_party/reference/miniflux"]
-	path = third_party/reference/miniflux
+[submodule ".agent/skills/references/miniflux/repo"]
+	path = .agent/skills/references/miniflux/repo
 	url = https://github.com/miniflux/v2.git
 	shallow = true
-[submodule "third_party/reference/gitea"]
-	path = third_party/reference/gitea
+[submodule ".agent/skills/references/gitea/repo"]
+	path = .agent/skills/references/gitea/repo
 	url = https://github.com/go-gitea/gitea.git
 	shallow = true
-[submodule "third_party/reference/grafana"]
-	path = third_party/reference/grafana
+[submodule ".agent/skills/references/grafana/repo"]
+	path = .agent/skills/references/grafana/repo
 	url = https://github.com/grafana/grafana.git
 	shallow = true
-[submodule "third_party/reference/librechat"]
-	path = third_party/reference/librechat
+[submodule ".agent/skills/references/librechat/repo"]
+	path = .agent/skills/references/librechat/repo
 	url = https://github.com/danny-avila/LibreChat.git
 	shallow = true
-[submodule "third_party/reference/llm"]
-	path = third_party/reference/llm
+[submodule ".agent/skills/references/llm/repo"]
+	path = .agent/skills/references/llm/repo
 	url = https://github.com/simonw/llm.git
 	shallow = true
-[submodule "third_party/reference/openresponses"]
-	path = third_party/reference/openresponses
+[submodule ".agent/skills/references/openresponses/repo"]
+	path = .agent/skills/references/openresponses/repo
 	url = https://github.com/openresponses/openresponses.git
 	shallow = true

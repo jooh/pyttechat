@@ -1,0 +1,96 @@
+name: "librechat"
+display_name: "LibreChat"
+role: "Product and UX reference for mature LLM chat behavior, conversation lifecycle, streaming response UX, multi-model/provider concepts, file/image/message rendering, and admin/configuration boundaries."
+repo_path: ".agent/skills/references/librechat/repo"
+submodule_url: "https://github.com/danny-avila/LibreChat.git"
+pinned_commit: "a00800161c8a0057644725ff60bd34403bb0a9b3"
+imported_at: "2026-05-25"
+license: "MIT"
+
+use_for:
+  - "LLM chat product behavior"
+  - "conversation and message lifecycle"
+  - "streaming response UX"
+  - "model/provider concepts"
+  - "file/image/message rendering patterns"
+
+do_not_use_for:
+  - "frontend architecture for this project"
+  - "Node, React, SPA, or bundler adoption"
+  - "provider orchestration owned by the proxy"
+
+important_paths:
+  - path: "client/src"
+    why: "Chat UX and interaction behavior reference only."
+  - path: "api/server/routes/convos.js"
+    why: "Conversation API behavior reference."
+  - path: "api/server/routes/messages.js"
+    why: "Message lifecycle behavior reference."
+  - path: "api/app/clients"
+    why: "Streaming and client behavior reference, not local architecture."
+  - path: "packages/data-schemas"
+    why: "Conversation/message schema concepts."
+  - path: "config"
+    why: "Provider/model/admin configuration boundaries."
+
+avoid_paths:
+  - path: "node_modules"
+    why: "Dependency tree must not be present or searched."
+  - path: "client"
+    why: "Avoid for implementation architecture; inspect only for UX behavior."
+  - path: "packages/client"
+    why: "Frontend package implementation is out of scope."
+  - path: "helm"
+    why: "Deployment charts are not needed."
+
+search_recipes:
+  streaming-chat:
+    description: "Find streaming response and cancellation UX behavior."
+    terms:
+      - "stream"
+      - "abort"
+      - "TextStream"
+    likely_paths:
+      - "api/app/clients"
+      - "api/server"
+      - "client/src"
+    avoid_paths:
+      - "node_modules"
+  conversation-lifecycle:
+    description: "Find conversation and message lifecycle concepts."
+    terms:
+      - "conversation"
+      - "message"
+      - "parentMessageId"
+    likely_paths:
+      - "api/server/routes"
+      - "packages/data-schemas"
+      - "client/src"
+    avoid_paths:
+      - "packages/client"
+  provider-config:
+    description: "Find provider/model configuration boundaries."
+    terms:
+      - "model"
+      - "endpoint"
+      - "provider"
+    likely_paths:
+      - "config"
+      - "api/server/routes"
+      - "packages/data-provider"
+    avoid_paths:
+      - "helm"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use for product behavior and UX decisions only; do not adopt its Node/React SPA architecture."

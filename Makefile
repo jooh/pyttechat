@@ -38,7 +38,7 @@ DEADCODE := $(BIN_DIR)/deadcode
 COVERAGE_PROFILE ?= coverage.out
 COVERAGE_MIN ?= 100.0
 
-GO_FILES := $(shell find . \( -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
+GO_FILES := $(shell find . \( -path './.agent/skills/references/*/repo' -o -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)

@@ -1,0 +1,91 @@
+name: "openresponses"
+display_name: "OpenResponses"
+role: "Responses API specification reference for request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations."
+repo_path: ".agent/skills/references/openresponses/repo"
+submodule_url: "https://github.com/openresponses/openresponses.git"
+pinned_commit: "cd31bc2060a27ee87a05ec97f49c84027eb6c3ba"
+imported_at: "2026-05-25"
+license: "Apache-2.0"
+
+use_for:
+  - "Responses API request and response shapes"
+  - "semantic streaming event contracts"
+  - "tool invocation item lifecycle"
+  - "compliance expectations"
+
+do_not_use_for:
+  - "documentation-site architecture"
+  - "generated client adoption"
+  - "frontend or build toolchain choices"
+
+important_paths:
+  - path: "schema/openapi.json"
+    why: "Canonical OpenAPI schema."
+  - path: "schema/paths/responses.json"
+    why: "Responses endpoint schema details."
+  - path: "schema/components/schemas"
+    why: "Request, response, item, stream, and tool schemas."
+  - path: "public/streaming"
+    why: "Streaming semantic diagrams and assets."
+  - path: "src/lib/compliance-tests.ts"
+    why: "Compliance behavior expectations."
+  - path: "src/lib/sse-parser.ts"
+    why: "SSE parsing behavior reference."
+
+avoid_paths:
+  - path: "src/generated"
+    why: "Generated artifacts should not guide implementation."
+  - path: "public/fonts"
+    why: "Static assets are irrelevant."
+  - path: "public/img"
+    why: "Static assets are irrelevant."
+  - path: "bin"
+    why: "Documentation generation scripts are not app dependencies."
+
+search_recipes:
+  responses-schema:
+    description: "Find request/response and item schema definitions."
+    terms:
+      - "CreateResponseBody"
+      - "ResponseResource"
+      - "Item"
+    likely_paths:
+      - "schema"
+    avoid_paths:
+      - "src/generated"
+  streaming-events:
+    description: "Find streaming event shapes and SSE handling."
+    terms:
+      - "stream"
+      - "event"
+      - "sse"
+    likely_paths:
+      - "schema"
+      - "src/lib"
+      - "public/streaming"
+    avoid_paths:
+      - "public/fonts"
+  tool-lifecycle:
+    description: "Find tool call and tool output item schemas."
+    terms:
+      - "ToolCall"
+      - "ToolCallOutput"
+      - "status"
+    likely_paths:
+      - "schema/components/schemas"
+    avoid_paths:
+      - "src/generated"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "Use as a wire-contract/spec reference only; do not adopt its docs-site toolchain or generated artifacts."
