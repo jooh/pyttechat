@@ -1002,17 +1002,17 @@ func csrfFromServedHTML(body string) string {
 func htmlFromServedSSE(t *testing.T, body string) string {
 	t.Helper()
 
-	var html strings.Builder
-	for _, data := range servedSSEData(t, body, "preview") {
-		var payload struct {
-			HTML string `json:"html"`
-		}
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			t.Fatalf("decode html SSE data error = %v; data = %q", err, data)
-		}
-		html.WriteString(payload.HTML)
+	data := servedSSEData(t, body, "preview")
+	if len(data) == 0 {
+		return ""
 	}
-	return html.String()
+	var payload struct {
+		HTML string `json:"html"`
+	}
+	if err := json.Unmarshal([]byte(data[len(data)-1]), &payload); err != nil {
+		t.Fatalf("decode preview SSE data error = %v; data = %q", err, data[len(data)-1])
+	}
+	return payload.HTML
 }
 
 func doneHTMLFromServedSSE(t *testing.T, body string) string {

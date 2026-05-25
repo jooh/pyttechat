@@ -418,8 +418,10 @@ func buildStreamEvents(resp responseObject) []streamEvent {
 		"output_index": 1,
 		"item":         item,
 	})
+	completedResponse := resp
+	completedResponse.Output = []outputItem{reasoning, item}
 	next("response.completed", map[string]any{
-		"response": resp,
+		"response": completedResponse,
 	})
 
 	return events

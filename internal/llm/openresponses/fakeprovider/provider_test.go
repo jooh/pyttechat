@@ -195,6 +195,7 @@ func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 	var partDoneText string
 	var itemDoneText string
 	var completedText string
+	var completedOutput []any
 	for _, frame := range frames {
 		switch frame.Event {
 		case "response.output_text.delta":
@@ -210,6 +211,7 @@ func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 		case "response.completed":
 			response, _ := frame.Payload["response"].(map[string]any)
 			completedText = stringField(response, "output_text")
+			completedOutput, _ = response["output"].([]any)
 		}
 	}
 
@@ -225,6 +227,14 @@ func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 	}
 	if completedText != "Echo: hello 🌍" {
 		t.Fatalf("completed output_text = %q, want deterministic echo", completedText)
+	}
+	if len(completedOutput) != 2 {
+		t.Fatalf("completed output = %#v, want reasoning and message items", completedOutput)
+	}
+	reasoningItem := requireMap(t, completedOutput[0], "completed.output[0]")
+	messageItem := requireMap(t, completedOutput[1], "completed.output[1]")
+	if reasoningItem["type"] != "reasoning" || messageItem["type"] != "message" {
+		t.Fatalf("completed output = %#v, want reasoning item followed by message item", completedOutput)
 	}
 }
 
