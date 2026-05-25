@@ -1,0 +1,127 @@
+---
+name: "<reference-name>"
+description: "Use this skill when the task would benefit from inspecting <Reference Display Name> as a read-only reference implementation checked out at .agent/skills/references/<reference-name>/repo."
+---
+
+# <Reference Display Name>
+
+## Purpose
+
+Use this reference to understand `<brief role or domain>`.
+
+This repository is read-only reference material. It is not part of the active implementation workspace, and its code should not be copied directly into this project.
+
+## Repo Location
+
+```text
+.agent/skills/references/<reference-name>/repo
+```
+
+The `repo/` directory is a git submodule pinned in `manifest.yaml`.
+
+## Boundaries
+
+- Do not edit files inside `repo/`.
+- Do not include `repo/` in broad project searches, linting, formatting, tests, or refactors.
+- Do not let this reference override the active repository's architecture, dependencies, style, or constraints.
+- Focused searches directly against this repo are allowed when this skill is relevant.
+
+## When To Use This Reference
+
+- `<use case 1>`
+- `<use case 2>`
+- `<use case 3>`
+
+## When Not To Use It
+
+- `<non-use case 1>`
+- `<non-use case 2>`
+- `<non-use case 3>`
+
+## Context Management
+
+Read `manifest.yaml` first, then inspect only the relevant paths or run a focused search recipe. Keep the main context small by preferring paths, symbols, and concise summaries over long code excerpts.
+
+For large or unfamiliar areas, prefer the sub-agent workflow below when supported.
+
+## Preferred Sub-Agent Workflow
+
+Ask a sub-agent to inspect this reference and return a compact report before loading large reference files into the main context.
+
+Reusable delegation prompt:
+
+```text
+Inspect the reference repository at:
+.agent/skills/references/<reference-name>/repo
+
+Use this current task description:
+<paste the current user task or a concise task summary>
+
+Find relevant implementation patterns in this reference repository. Focus only on areas likely to apply to the current task. Avoid unrelated product areas, generated files, vendored dependencies, build outputs, and paths listed as avoid paths in the reference skill or manifest.
+
+Do not edit files.
+
+Return a compact report with these sections:
+- relevant_files: paths and one-line reasons
+- implementation_flow: concise description of the relevant flow
+- key_abstractions: important types, functions, modules, or concepts
+- edge_cases: notable behavior, failure modes, or security concerns
+- adaptation_guidance: how this can be adapted to the active repo without copying directly
+- warnings: mismatches, dependency concerns, or areas not to follow
+
+Prefer paths and concise summaries over large code excerpts. Quote only tiny snippets when exact names or shapes matter.
+```
+
+## High-Level Repo Structure
+
+- `<path>`: `<purpose>`
+- `<path>`: `<purpose>`
+- `<path>`: `<purpose>`
+
+## Important Paths
+
+- `<repo-relative/path>`: `<why it matters>`
+- `<repo-relative/path>`: `<why it matters>`
+- `<repo-relative/path>`: `<why it matters>`
+
+## Paths To Avoid
+
+- `<repo-relative/path>`: `<why to avoid it>`
+- `<repo-relative/path>`: `<why to avoid it>`
+- `<repo-relative/path>`: `<why to avoid it>`
+
+## Focused Search Recipes
+
+Use focused searches rooted at `.agent/skills/references/<reference-name>/repo`.
+
+```sh
+rg "<term or symbol>" .agent/skills/references/<reference-name>/repo/<likely-path>
+```
+
+Recipes:
+
+- `<recipe-name>`: search for `<terms>` in `<likely paths>`; avoid `<avoid paths>`.
+- `<recipe-name>`: search for `<terms>` in `<likely paths>`; avoid `<avoid paths>`.
+- `<recipe-name>`: search for `<terms>` in `<likely paths>`; avoid `<avoid paths>`.
+
+## Expected Sub-Agent Report Format
+
+Reports should be compact and use these headings:
+
+- `relevant_files`
+- `implementation_flow`
+- `key_abstractions`
+- `edge_cases`
+- `adaptation_guidance`
+- `warnings`
+
+## Do Not Copy Directly
+
+Treat this repository as implementation guidance, not a source package. Adapt ideas to the active repo's language, architecture, dependencies, security model, and tests. Do not copy source code, generated files, dependency declarations, or configuration wholesale.
+
+## Adaptation Guidance
+
+- Prefer the active repository's existing patterns and constraints.
+- Translate reference behavior into small, local changes.
+- Preserve this project's dependency policy and testing standards.
+- Add tests in the active repo for any behavior adapted from the reference.

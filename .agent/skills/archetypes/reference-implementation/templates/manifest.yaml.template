@@ -1,0 +1,46 @@
+name: "<reference-name>"
+display_name: "<Reference Display Name>"
+role: "<One sentence describing what this reference repository is useful for.>"
+repo_path: ".agent/skills/references/<reference-name>/repo"
+submodule_url: "<https://example.com/org/repo.git>"
+pinned_commit: "<full commit sha>"
+imported_at: "<YYYY-MM-DD>"
+license: "<license identifier or summary>"
+
+use_for:
+  - "<task, subsystem, or implementation pattern this reference is useful for>"
+
+do_not_use_for:
+  - "<task, subsystem, or decision this reference should not guide>"
+
+important_paths:
+  - path: "<repo-relative/path>"
+    why: "<why this path matters>"
+
+avoid_paths:
+  - path: "<repo-relative/path>"
+    why: "<why agents should avoid or de-prioritize this path>"
+
+search_recipes:
+  <recipe-name>:
+    description: "<What this recipe helps find.>"
+    terms:
+      - "<search term or symbol>"
+    likely_paths:
+      - "<repo-relative/path-or-glob>"
+    avoid_paths:
+      - "<repo-relative/path-or-glob>"
+
+subagent_policy:
+  prefer_subagent: true
+  summary_only: true
+  expected_report_sections:
+    - relevant_files
+    - implementation_flow
+    - key_abstractions
+    - edge_cases
+    - adaptation_guidance
+    - warnings
+
+notes:
+  - "<local caveat, update note, or known limitation>"

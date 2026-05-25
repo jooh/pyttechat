@@ -1,0 +1,17 @@
+# Registry of concrete reference implementation skills.
+#
+# Keep this file lightweight. Detailed guidance belongs in each reference skill's
+# SKILL.md and manifest.yaml.
+#
+# Example:
+# references:
+#   librechat:
+#     skill_path: .agent/skills/references/librechat/SKILL.md
+#     repo_path: .agent/skills/references/librechat/repo
+#     role: Reference implementation for self-hosted LLM chat application patterns.
+#     use_for:
+#       - chat UI
+#       - streaming responses
+#       - markdown rendering
+
+references: {}

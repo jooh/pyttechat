@@ -1,0 +1,2 @@
+# Reference repo submodules are excluded from broad searches.
+.agent/skills/references/*/repo/

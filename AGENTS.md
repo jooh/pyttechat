@@ -46,6 +46,10 @@ The submodules under `third_party/reference/` are read-only inspiration. Do not 
 - LLM is a CLI behavior reference for LLM prompt and chat workflows. Use it to understand command ergonomics, interactive chat loops, model/options UX, conversation continuation, prompt/response logging, usage metadata, fragments, schemas, and tool-call visibility. Do not copy LLM's Python implementation, SQLite schema, plugin runtime, provider integrations, or local model orchestration.
 - OpenResponses is the Responses API specification reference for LLM-side interoperability. Use it to understand request/response shapes, item lifecycle, semantic streaming events, tool invocation patterns, and compliance expectations. Do not adopt its documentation-site toolchain or generated artifacts as project dependencies.
 
+## Agent Reference Skills
+
+Reference repositories may also live under `.agent/skills/references/*/repo`. These repositories are read-only reference material and are not part of the active implementation workspace. Do not include them in broad searches, refactors, linting, formatting, or tests. Use the relevant skill before inspecting a reference repo, and prefer sub-agent exploration where supported.
+
 ## Git strategy
 
 - if on `main`, check out a feature branch with a suitable name before starting work

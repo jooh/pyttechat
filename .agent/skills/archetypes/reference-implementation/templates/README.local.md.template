@@ -1,0 +1,25 @@
+# <Reference Display Name> Local Notes
+
+## Why This Reference Was Added
+
+<Short explanation of the project need that justified adding this reference.>
+
+## Import And Update History
+
+- <YYYY-MM-DD>: Imported `<submodule_url>` at `<commit>`.
+
+## Useful Discoveries
+
+- <Path, concept, or workflow worth remembering.>
+
+## Local Caveats
+
+- <Mismatch between this reference and the active project.>
+
+## Known Irrelevant Areas
+
+- <Path or subsystem that future agents can ignore for this project's needs.>
+
+## Maintenance Notes
+
+- <How or when to update the submodule, manifest, or skill notes.>
