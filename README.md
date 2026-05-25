@@ -59,6 +59,15 @@ make serve-stop
 
 Override the default address with `WEB_ADDR=127.0.0.1:3017 make serve-start`.
 
+To test browser streaming and the Stop button against the local fake OpenResponses provider, run both services together:
+
+```sh
+make serve-fake-start
+make serve-fake-stop
+```
+
+The fake provider streams reasoning first, then answer text, with `FAKE_RESPONSES_STREAM_DELAY=150ms` by default.
+
 Use an OpenResponses-compatible LLM proxy:
 
 ```sh

@@ -286,6 +286,8 @@ func TestCreateTurnRejectsConcurrentTurn(t *testing.T) {
 }
 
 func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
+	completedAt := time.Date(2026, 5, 25, 12, 34, 56, 0, time.UTC)
+	withTimeNow(t, func() time.Time { return completedAt })
 	llmClient := dummy.NewClient(dummy.Turn{
 		ReasoningChunks: []string{"think"},
 		TextChunks:      []string{"hel", "lo"},
@@ -312,23 +314,30 @@ func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	}
 
 	frames := parseSSE(t, body)
-	assertFrameEvents(t, frames, []string{"reasoning", "html", "done"})
+	assertFrameEvents(t, frames, []string{"reasoning", "preview", "preview", "done"})
 	if !hasFrame(frames, "reasoning", `"delta":"think"`) {
 		t.Fatalf("SSE frames = %#v, want reasoning frame", frames)
 	}
 	if hasEvent(frames, "text") {
 		t.Fatalf("SSE frames = %#v, did not expect assistant text events", frames)
 	}
-	html := decodeHTMLFrame(t, frames[1])
-	if !strings.Contains(html.HTML, "<p>hello</p>") {
-		t.Fatalf("html frame = %#v, want rendered paragraph", html)
+	firstPreview := decodePreviewFrame(t, frames[1])
+	if !strings.Contains(firstPreview.HTML, "<p>hel</p>") {
+		t.Fatalf("first preview frame = %#v, want rendered partial paragraph", firstPreview)
+	}
+	secondPreview := decodePreviewFrame(t, frames[2])
+	if !strings.Contains(secondPreview.HTML, "<p>hello</p>") {
+		t.Fatalf("second preview frame = %#v, want rendered complete paragraph", secondPreview)
 	}
 	if !hasFrame(frames, "done", `"response_id":"dummy-response-1"`) {
 		t.Fatalf("SSE frames = %#v, want done frame", frames)
 	}
-	done := decodeDoneFrame(t, frames[2])
+	done := decodeDoneFrame(t, frames[3])
 	if !strings.Contains(done.HTML, "<p>hello</p>") {
 		t.Fatalf("done frame = %#v, want final rendered HTML", done)
+	}
+	if done.CompletedAt != completedAt.Format(time.RFC3339) {
+		t.Fatalf("done completed_at = %q, want %q", done.CompletedAt, completedAt.Format(time.RFC3339))
 	}
 
 	requests := llmClient.Requests()
@@ -369,8 +378,8 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 
 	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial\n\n"}
 	frame := readSSEFrame(t, bufio.NewReader(response.Body))
-	if frame.Event != "html" {
-		t.Fatalf("first frame = %#v, want html", frame)
+	if frame.Event != "preview" {
+		t.Fatalf("first frame = %#v, want preview", frame)
 	}
 	if frame.ID == "" {
 		t.Fatalf("first frame = %#v, want event id", frame)
@@ -400,7 +409,7 @@ func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {
 	}
 	frames := parseSSE(t, body)
 	assertFrameEvents(t, frames, []string{"done"})
-	if hasEvent(frames, "text") || hasFrame(frames, "html", "partial") {
+	if hasEvent(frames, "text") || hasFrame(frames, "preview", "partial") {
 		t.Fatalf("replay body = %q, did not expect already acknowledged assistant content event", body)
 	}
 	if !hasFrame(frames, "done", `"response_id":"resp_done"`) {
@@ -419,7 +428,7 @@ func TestTurnJobDisconnectsSlowSubscriberWithoutLosingReplay(t *testing.T) {
 	}
 
 	for i := 0; i < 130; i++ {
-		turn.emit("html", htmlEvent{
+		turn.emit("preview", htmlEvent{
 			TurnID:             turn.id,
 			AssistantMessageID: turn.assistantMessageID,
 			HTML:               template.HTML(itoa(i)),
@@ -720,7 +729,7 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	}
 }
 
-func TestTurnStreamsHTMLBlocksAndFinalFullRender(t *testing.T) {
+func TestTurnStreamsPreviewsAndFinalFullRender(t *testing.T) {
 	llmClient := dummy.NewClient(dummy.Turn{
 		TextChunks: []string{"first\n\n", "second"},
 	})
@@ -738,15 +747,15 @@ func TestTurnStreamsHTMLBlocksAndFinalFullRender(t *testing.T) {
 	}
 
 	frames := parseSSE(t, body)
-	assertFrameEvents(t, frames, []string{"html", "html", "done"})
-	first := decodeHTMLFrame(t, frames[0])
-	second := decodeHTMLFrame(t, frames[1])
+	assertFrameEvents(t, frames, []string{"preview", "preview", "done"})
+	first := decodePreviewFrame(t, frames[0])
+	second := decodePreviewFrame(t, frames[1])
 	done := decodeDoneFrame(t, frames[2])
 	if !strings.Contains(first.HTML, "<p>first</p>") {
-		t.Fatalf("first html frame = %#v, want first paragraph", first)
+		t.Fatalf("first preview frame = %#v, want first paragraph", first)
 	}
-	if !strings.Contains(second.HTML, "<p>second</p>") {
-		t.Fatalf("second html frame = %#v, want second paragraph", second)
+	if !strings.Contains(second.HTML, "<p>first</p>") || !strings.Contains(second.HTML, "<p>second</p>") {
+		t.Fatalf("second preview frame = %#v, want full rendered preview", second)
 	}
 	if !strings.Contains(done.HTML, "<p>first</p>") || !strings.Contains(done.HTML, "<p>second</p>") {
 		t.Fatalf("done frame = %#v, want complete rendered message", done)
@@ -756,7 +765,7 @@ func TestTurnStreamsHTMLBlocksAndFinalFullRender(t *testing.T) {
 	}
 }
 
-func TestTurnStreamingBuffersFenceUntilClosed(t *testing.T) {
+func TestTurnStreamsPreviewForSingleParagraphWithoutBlockBoundary(t *testing.T) {
 	llmClient := newControlledClient()
 	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
 	defer server.Close()
@@ -781,26 +790,66 @@ func TestTurnStreamingBuffersFenceUntilClosed(t *testing.T) {
 	}
 
 	reader := bufio.NewReader(response.Body)
-	frames := make(chan sseFrame, 1)
-	go func() {
-		frames <- readSSEFrame(t, reader)
-	}()
+	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial"}
+	frame := readSSEFrame(t, reader)
+	if frame.Event != "preview" {
+		t.Fatalf("first frame = %#v, want preview", frame)
+	}
+	preview := decodePreviewFrame(t, frame)
+	if !strings.Contains(preview.HTML, "<p>partial</p>") {
+		t.Fatalf("preview frame = %#v, want rendered partial paragraph", preview)
+	}
 
+	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
+	frame = readSSEFrame(t, reader)
+	if frame.Event != "done" {
+		t.Fatalf("terminal frame = %#v, want done", frame)
+	}
+}
+
+func TestTurnStreamingPreviewsFenceBeforeClosed(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	_ = llmClient.waitForContext(t)
+
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	reader := bufio.NewReader(response.Body)
 	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "```go\nfmt.Println(1)\n"}
-	select {
-	case frame := <-frames:
-		t.Fatalf("received frame before closing fence: %#v", frame)
-	case <-time.After(50 * time.Millisecond):
+	frame := readSSEFrame(t, reader)
+	if frame.Event != "preview" {
+		t.Fatalf("frame before closing fence = %#v, want preview", frame)
+	}
+	html := decodePreviewFrame(t, frame)
+	if !strings.Contains(html.HTML, "fmt") {
+		t.Fatalf("preview frame = %#v, want rendered fenced code preview", html)
 	}
 
 	llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "```\n"}
-	frame := waitSSEFrame(t, frames)
-	if frame.Event != "html" {
-		t.Fatalf("frame after closing fence = %#v, want html", frame)
+	frame = readSSEFrame(t, reader)
+	if frame.Event != "preview" {
+		t.Fatalf("frame after closing fence = %#v, want preview", frame)
 	}
-	html := decodeHTMLFrame(t, frame)
+	html = decodePreviewFrame(t, frame)
 	if !strings.Contains(html.HTML, `class="chroma"`) || !strings.Contains(html.HTML, "fmt") {
-		t.Fatalf("html frame = %#v, want highlighted fenced code", html)
+		t.Fatalf("preview frame = %#v, want highlighted fenced code", html)
 	}
 
 	llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}
@@ -832,10 +881,10 @@ func TestTurnStreamingSanitizesUnsafeModelHTML(t *testing.T) {
 
 	frames := parseSSE(t, body)
 	for _, frame := range frames {
-		if frame.Event != "html" {
+		if frame.Event != "preview" {
 			continue
 		}
-		payload := decodeHTMLFrame(t, frame)
+		payload := decodePreviewFrame(t, frame)
 		assertSafeRenderedHTML(t, payload.HTML)
 	}
 	done := decodeDoneFrame(t, frames[len(frames)-1])
@@ -1328,6 +1377,7 @@ type testDonePayload struct {
 	ResponseID         string     `json:"response_id"`
 	Usage              *llm.Usage `json:"usage,omitempty"`
 	HTML               string     `json:"html"`
+	CompletedAt        string     `json:"completed_at"`
 }
 
 func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {
@@ -1346,6 +1396,22 @@ func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {
 	return payload
 }
 
+func decodePreviewFrame(t *testing.T, frame sseFrame) testHTMLPayload {
+	t.Helper()
+
+	if frame.Event != "preview" {
+		t.Fatalf("frame event = %q, want preview: %#v", frame.Event, frame)
+	}
+	var payload testHTMLPayload
+	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
+		t.Fatalf("decode preview frame error = %v; frame = %#v", err, frame)
+	}
+	if payload.TurnID == "" || payload.AssistantMessageID == "" {
+		t.Fatalf("preview payload = %#v, want ids", payload)
+	}
+	return payload
+}
+
 func decodeDoneFrame(t *testing.T, frame sseFrame) testDonePayload {
 	t.Helper()
 
@@ -1360,6 +1426,16 @@ func decodeDoneFrame(t *testing.T, frame sseFrame) testDonePayload {
 		t.Fatalf("done payload = %#v, want ids", payload)
 	}
 	return payload
+}
+
+func withTimeNow(t *testing.T, clock func() time.Time) {
+	t.Helper()
+
+	original := timeNow
+	timeNow = clock
+	t.Cleanup(func() {
+		timeNow = original
+	})
 }
 
 func assertSafeRenderedHTML(t *testing.T, html string) {

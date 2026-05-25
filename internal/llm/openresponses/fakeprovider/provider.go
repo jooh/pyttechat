@@ -1,6 +1,7 @@
 package fakeprovider
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -16,14 +18,24 @@ const (
 	chunkRunes   = 8
 )
 
-type provider struct{}
+type Options struct {
+	StreamDelay time.Duration
+}
+
+type provider struct {
+	opts Options
+}
 
 // NewHandler returns a deterministic OpenResponses-compatible fake provider.
 func NewHandler() http.Handler {
-	return provider{}
+	return NewHandlerWithOptions(Options{})
 }
 
-func (provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func NewHandlerWithOptions(opts Options) http.Handler {
+	return provider{opts: opts}
+}
+
+func (p provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/v1/responses" {
 		writeJSONError(w, http.StatusNotFound, "not_found", "not found")
 		return
@@ -45,7 +57,7 @@ func (provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := writeStreamingResponse(w, r, resp); err != nil && !errors.Is(err, r.Context().Err()) {
+	if err := writeStreamingResponseWithOptions(w, r, resp, p.opts); err != nil && !errors.Is(err, r.Context().Err()) {
 		return
 	}
 }
@@ -84,17 +96,24 @@ type responseObject struct {
 }
 
 type outputItem struct {
-	ID      string        `json:"id"`
-	Type    string        `json:"type"`
-	Status  string        `json:"status"`
-	Role    string        `json:"role"`
-	Content []contentPart `json:"content"`
+	ID               string        `json:"id"`
+	Type             string        `json:"type"`
+	Status           string        `json:"status"`
+	Role             string        `json:"role,omitempty"`
+	Content          []contentPart `json:"content,omitempty"`
+	Summary          []summaryPart `json:"summary,omitempty"`
+	EncryptedContent string        `json:"encrypted_content,omitempty"`
 }
 
 type contentPart struct {
 	Type        string `json:"type"`
 	Text        string `json:"text"`
 	Annotations []any  `json:"annotations"`
+}
+
+type summaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type usage struct {
@@ -241,6 +260,10 @@ type streamEvent struct {
 }
 
 func writeStreamingResponse(w http.ResponseWriter, r *http.Request, resp responseObject) error {
+	return writeStreamingResponseWithOptions(w, r, resp, Options{})
+}
+
+func writeStreamingResponseWithOptions(w http.ResponseWriter, r *http.Request, resp responseObject, opts Options) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSONError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming unsupported")
@@ -254,9 +277,14 @@ func writeStreamingResponse(w http.ResponseWriter, r *http.Request, resp respons
 	header.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	for _, event := range buildStreamEvents(resp) {
+	for i, event := range buildStreamEvents(resp) {
 		if err := r.Context().Err(); err != nil {
 			return err
+		}
+		if i > 0 {
+			if err := waitStreamDelay(r.Context(), opts.StreamDelay); err != nil {
+				return err
+			}
 		}
 		if err := writeSSEEvent(w, flusher, event.Type, event.Data); err != nil {
 			_ = writeSSEEvent(w, flusher, "error", map[string]any{
@@ -273,6 +301,20 @@ func writeStreamingResponse(w http.ResponseWriter, r *http.Request, resp respons
 		return err
 	}
 	return writeSSEDone(w, flusher)
+}
+
+func waitStreamDelay(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func nextSequence(data map[string]any) int {
@@ -303,12 +345,42 @@ func buildStreamEvents(resp responseObject) []streamEvent {
 	next("response.created", map[string]any{"response": inProgressResponse})
 	next("response.in_progress", map[string]any{"response": inProgressResponse})
 
+	reasoningText := fakeReasoningText(resp.OutputText)
+	reasoning := outputItem{
+		ID:     deterministicID("rs", resp.ID+"\n"+reasoningText),
+		Type:   "reasoning",
+		Status: "completed",
+		Summary: []summaryPart{
+			{Type: "summary_text", Text: reasoningText},
+		},
+		EncryptedContent: deterministicID("encrypted", resp.ID),
+	}
+	inProgressReasoning := reasoning
+	inProgressReasoning.Status = "in_progress"
+	inProgressReasoning.Summary = nil
+	inProgressReasoning.EncryptedContent = ""
+	next("response.output_item.added", map[string]any{
+		"output_index": 0,
+		"item":         inProgressReasoning,
+	})
+	for _, delta := range chunkText(reasoningText) {
+		next("response.reasoning.delta", map[string]any{
+			"item_id":      reasoning.ID,
+			"output_index": 0,
+			"delta":        delta,
+		})
+	}
+	next("response.output_item.done", map[string]any{
+		"output_index": 0,
+		"item":         reasoning,
+	})
+
 	item := resp.Output[0]
 	inProgressItem := item
 	inProgressItem.Status = "in_progress"
 	inProgressItem.Content = []contentPart{}
 	next("response.output_item.added", map[string]any{
-		"output_index": 0,
+		"output_index": 1,
 		"item":         inProgressItem,
 	})
 
@@ -317,7 +389,7 @@ func buildStreamEvents(resp responseObject) []streamEvent {
 	inProgressPart.Text = ""
 	next("response.content_part.added", map[string]any{
 		"item_id":       item.ID,
-		"output_index":  0,
+		"output_index":  1,
 		"content_index": 0,
 		"part":          inProgressPart,
 	})
@@ -325,25 +397,25 @@ func buildStreamEvents(resp responseObject) []streamEvent {
 	for _, delta := range chunkText(resp.OutputText) {
 		next("response.output_text.delta", map[string]any{
 			"item_id":       item.ID,
-			"output_index":  0,
+			"output_index":  1,
 			"content_index": 0,
 			"delta":         delta,
 		})
 	}
 	next("response.output_text.done", map[string]any{
 		"item_id":       item.ID,
-		"output_index":  0,
+		"output_index":  1,
 		"content_index": 0,
 		"text":          resp.OutputText,
 	})
 	next("response.content_part.done", map[string]any{
 		"item_id":       item.ID,
-		"output_index":  0,
+		"output_index":  1,
 		"content_index": 0,
 		"part":          part,
 	})
 	next("response.output_item.done", map[string]any{
-		"output_index": 0,
+		"output_index": 1,
 		"item":         item,
 	})
 	next("response.completed", map[string]any{
@@ -351,6 +423,13 @@ func buildStreamEvents(resp responseObject) []streamEvent {
 	})
 
 	return events
+}
+
+func fakeReasoningText(outputText string) string {
+	if strings.TrimSpace(outputText) == "" {
+		return "Preparing a concise fake response."
+	}
+	return "Preparing a concise fake response before streaming the answer."
 }
 
 func chunkText(text string) []string {

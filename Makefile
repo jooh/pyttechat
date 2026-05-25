@@ -13,6 +13,10 @@ PRE_COMMIT_CACHE := $(CACHE_DIR)/pre-commit
 WEB_ADDR ?= 127.0.0.1:3000
 WEB_PID_FILE ?= $(CACHE_DIR)/pyttechat-web.pid
 WEB_LOG_FILE ?= $(CACHE_DIR)/pyttechat-web.log
+FAKE_RESPONSES_ADDR ?= 127.0.0.1:8080
+FAKE_RESPONSES_STREAM_DELAY ?= 150ms
+FAKE_RESPONSES_PID_FILE ?= $(CACHE_DIR)/fake-responses.pid
+FAKE_RESPONSES_LOG_FILE ?= $(CACHE_DIR)/fake-responses.log
 
 GOCACHE ?= $(GO_BUILD_CACHE)
 GOMODCACHE ?= $(GO_MOD_CACHE)
@@ -45,7 +49,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'example.com/llm-chat-web/internal/buildinfo.Version=$(VERSION)' -X 'example.com/llm-chat-web/internal/buildinfo.Commit=$(COMMIT)' -X 'example.com/llm-chat-web/internal/buildinfo.Date=$(DATE)'
 
-.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build serve-start serve-stop serve-status serve-restart clean pre-commit ci tools
+.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit ci tools
 
 help:
 	@printf '%s\n' \
@@ -66,10 +70,13 @@ help:
 		'  security      Run gosec.' \
 		'  deadcode      Run deadcode as an advisory check.' \
 		'  build         Build bin/pyttechat.' \
+		'  build-fake-responses Build bin/fake-responses.' \
 		'  serve-start   Start local web server in the background.' \
 		'  serve-stop    Stop local web server started by serve-start.' \
 		'  serve-status  Show local web server status.' \
 		'  serve-restart Restart local web server.' \
+		'  serve-fake-start Start fake Responses API and web app for streaming UI checks.' \
+		'  serve-fake-stop Stop fake Responses API and web app.' \
 		'  clean         Remove local build and coverage artifacts.' \
 		'  pre-commit    Run all configured pre-commit hooks.' \
 		'  ci            Run PR-quality checks.'
@@ -174,6 +181,10 @@ build: cache-dirs
 	mkdir -p $(BUILD_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/pyttechat ./cmd/pyttechat
 
+build-fake-responses: cache-dirs
+	mkdir -p $(BUILD_DIR)
+	$(GO) build -trimpath -o $(BUILD_DIR)/fake-responses ./cmd/fake-responses
+
 serve-start: build cache-dirs
 	@if [ -f "$(WEB_PID_FILE)" ]; then \
 		pid=$$(cat "$(WEB_PID_FILE)"); \
@@ -210,7 +221,7 @@ serve-stop:
 	fi; \
 	command=$$(ps -p "$$pid" -o command= 2>/dev/null || true); \
 	case "$$command" in \
-		*"pyttechat serve"*) ;; \
+		*"pyttechat serve"*|*"pyttechat "*" serve"*) ;; \
 		*) \
 			printf 'refusing to stop pid %s; it is not a pyttechat serve process\n' "$$pid"; \
 			printf 'command: %s\n' "$$command"; \
@@ -244,6 +255,83 @@ serve-status:
 	fi
 
 serve-restart: serve-stop serve-start
+
+serve-fake-start: build build-fake-responses cache-dirs
+	@if [ -f "$(WEB_PID_FILE)" ]; then \
+		pid=$$(cat "$(WEB_PID_FILE)"); \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			printf 'pyttechat web already running on http://%s (pid %s); run make serve-stop first\n' "$(WEB_ADDR)" "$$pid"; \
+			exit 1; \
+		fi; \
+		rm -f "$(WEB_PID_FILE)"; \
+	fi; \
+	if [ -f "$(FAKE_RESPONSES_PID_FILE)" ]; then \
+		pid=$$(cat "$(FAKE_RESPONSES_PID_FILE)"); \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			printf 'fake Responses API already running on http://%s (pid %s)\n' "$(FAKE_RESPONSES_ADDR)" "$$pid"; \
+		else \
+			rm -f "$(FAKE_RESPONSES_PID_FILE)"; \
+		fi; \
+	fi; \
+	if [ ! -f "$(FAKE_RESPONSES_PID_FILE)" ]; then \
+		: > "$(FAKE_RESPONSES_LOG_FILE)"; \
+		nohup "$(BUILD_DIR)/fake-responses" --addr "$(FAKE_RESPONSES_ADDR)" --stream-delay "$(FAKE_RESPONSES_STREAM_DELAY)" >"$(FAKE_RESPONSES_LOG_FILE)" 2>&1 & \
+		fake_pid=$$!; \
+		printf '%s\n' "$$fake_pid" >"$(FAKE_RESPONSES_PID_FILE)"; \
+		sleep 1; \
+		if ! kill -0 "$$fake_pid" 2>/dev/null; then \
+			printf 'fake Responses API failed to start; see %s\n' "$(FAKE_RESPONSES_LOG_FILE)"; \
+			rm -f "$(FAKE_RESPONSES_PID_FILE)"; \
+			exit 1; \
+		fi; \
+	fi; \
+	: > "$(WEB_LOG_FILE)"; \
+	nohup "$(BUILD_DIR)/pyttechat" --proxy-url "http://$(FAKE_RESPONSES_ADDR)" --reasoning-effort low serve --addr "$(WEB_ADDR)" >"$(WEB_LOG_FILE)" 2>&1 & \
+	web_pid=$$!; \
+	printf '%s\n' "$$web_pid" >"$(WEB_PID_FILE)"; \
+	sleep 1; \
+	if ! kill -0 "$$web_pid" 2>/dev/null; then \
+		printf 'pyttechat web failed to start; see %s\n' "$(WEB_LOG_FILE)"; \
+		rm -f "$(WEB_PID_FILE)"; \
+		exit 1; \
+	fi; \
+	printf 'fake Responses API started on http://%s\n' "$(FAKE_RESPONSES_ADDR)"; \
+	printf 'fake log: %s\n' "$(FAKE_RESPONSES_LOG_FILE)"; \
+	printf 'pyttechat web started on http://%s\n' "$(WEB_ADDR)"; \
+	printf 'web log: %s\n' "$(WEB_LOG_FILE)"
+
+serve-fake-stop: serve-stop
+	@if [ ! -f "$(FAKE_RESPONSES_PID_FILE)" ]; then \
+		printf 'fake Responses API is not running; no pid file at %s\n' "$(FAKE_RESPONSES_PID_FILE)"; \
+		exit 0; \
+	fi; \
+	pid=$$(cat "$(FAKE_RESPONSES_PID_FILE)"); \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
+		printf 'removing stale pid file for stopped fake Responses API process %s\n' "$$pid"; \
+		rm -f "$(FAKE_RESPONSES_PID_FILE)"; \
+		exit 0; \
+	fi; \
+	command=$$(ps -p "$$pid" -o command= 2>/dev/null || true); \
+	case "$$command" in \
+		*"fake-responses"*) ;; \
+		*) \
+			printf 'refusing to stop pid %s; it is not a fake-responses process\n' "$$pid"; \
+			printf 'command: %s\n' "$$command"; \
+			exit 1; \
+			;; \
+	esac; \
+	kill "$$pid"; \
+	i=0; \
+	while kill -0 "$$pid" 2>/dev/null; do \
+		if [ "$$i" -ge 5 ]; then \
+			printf 'fake Responses API did not stop after SIGTERM (pid %s)\n' "$$pid"; \
+			exit 1; \
+		fi; \
+		i=$$((i + 1)); \
+		sleep 1; \
+	done; \
+	rm -f "$(FAKE_RESPONSES_PID_FILE)"; \
+	printf 'fake Responses API stopped (pid %s)\n' "$$pid"
 
 clean:
 	rm -rf $(BUILD_DIR) coverage.out coverage.html *.prof *.test test-results

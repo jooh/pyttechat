@@ -231,7 +231,7 @@ textarea {
 }
 
 .reasoning {
-  margin-top: 10px;
+  margin: 0 0 10px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -244,6 +244,13 @@ textarea {
 .reasoning-content {
   margin-top: 6px;
   white-space: pre-wrap;
+}
+
+.message-completed-at {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .composer {

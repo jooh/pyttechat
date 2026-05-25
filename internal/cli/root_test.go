@@ -115,14 +115,18 @@ func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
 	}
 
 	input := requireSlice(t, requestBodies[1]["input"], "input")
-	if len(input) != 3 {
-		t.Fatalf("second request input count = %d, want prior user, assistant, next user: %#v", len(input), input)
+	if len(input) != 4 {
+		t.Fatalf("second request input count = %d, want prior user, reasoning, assistant, next user: %#v", len(input), input)
 	}
 	firstUser := requireMap(t, input[0], "input[0]")
-	priorAssistant := requireMap(t, input[1], "input[1]")
-	secondUser := requireMap(t, input[2], "input[2]")
+	priorReasoning := requireMap(t, input[1], "input[1]")
+	priorAssistant := requireMap(t, input[2], "input[2]")
+	secondUser := requireMap(t, input[3], "input[3]")
 	if firstUser["role"] != "user" || firstUser["content"] != "first" {
 		t.Fatalf("first input = %#v, want first user turn", firstUser)
+	}
+	if priorReasoning["type"] != "reasoning" || priorReasoning["id"] == "" {
+		t.Fatalf("prior reasoning input = %#v, want reasoning item", priorReasoning)
 	}
 	if priorAssistant["role"] != "assistant" || priorAssistant["content"] != "Echo: first" {
 		t.Fatalf("prior assistant input = %#v, want first assistant answer", priorAssistant)
@@ -999,7 +1003,7 @@ func htmlFromServedSSE(t *testing.T, body string) string {
 	t.Helper()
 
 	var html strings.Builder
-	for _, data := range servedSSEData(t, body, "html") {
+	for _, data := range servedSSEData(t, body, "preview") {
 		var payload struct {
 			HTML string `json:"html"`
 		}

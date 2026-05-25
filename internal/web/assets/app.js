@@ -102,10 +102,12 @@
   function ensureReasoning(article) {
     let details = article.querySelector('.reasoning');
     if (details) {
+      details.open = true;
       return details.querySelector('.reasoning-content');
     }
     details = document.createElement('details');
     details.className = 'reasoning';
+    details.open = true;
 
     const summary = document.createElement('summary');
     summary.textContent = 'Reasoning';
@@ -114,8 +116,31 @@
     content.className = 'reasoning-content';
 
     details.append(summary, content);
-    article.append(details);
+    const body = article.querySelector('.message-text');
+    article.insertBefore(details, body);
     return content;
+  }
+
+  function closeReasoning(article) {
+    const details = article.querySelector('.reasoning');
+    if (details) {
+      details.open = false;
+    }
+  }
+
+  function setCompletedAt(assistant, completedAt) {
+    if (!completedAt) {
+      return;
+    }
+    let timestamp = assistant.article.querySelector('.message-completed-at');
+    if (!timestamp) {
+      timestamp = document.createElement('time');
+      timestamp.className = 'message-completed-at';
+      assistant.article.append(timestamp);
+    }
+    const date = new Date(completedAt);
+    timestamp.dateTime = completedAt;
+    timestamp.textContent = Number.isNaN(date.getTime()) ? completedAt : `Completed ${date.toLocaleString()}`;
   }
 
   function setSubmitting(submitting) {
@@ -231,7 +256,7 @@
       clearStreamErrorTimer();
     };
 
-    currentSource.addEventListener('html', function (event) {
+    currentSource.addEventListener('preview', function (event) {
       if (currentTurn !== turn) {
         return;
       }
@@ -242,7 +267,10 @@
         assistant.article.dataset.messageId = data.assistant_message_id;
         assistant.text.id = `message-body-${data.assistant_message_id}`;
       }
-      assistant.text.insertAdjacentHTML('beforeend', data.html || '');
+      assistant.text.innerHTML = data.html || '';
+      if (data.html) {
+        closeReasoning(assistant.article);
+      }
       scrollToBottom(false);
     });
 
@@ -265,6 +293,7 @@
       if (typeof data.html === 'string') {
         assistant.text.innerHTML = data.html;
       }
+      setCompletedAt(assistant, data.completed_at);
       assistant.article.classList.add('message-complete');
       if (!assistantHasContent(assistant)) {
         removeMessage(assistant);
@@ -324,6 +353,16 @@
     } catch (error) {
       discardTurn(user, assistant);
       finishTurn();
+    }
+  });
+
+  prompt.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    if (!currentTurn) {
+      form.requestSubmit();
     }
   });
 

@@ -32,11 +32,11 @@ The LLM proxy API owns tool calls, MCP integration, model routing, token account
 
 ## Markdown Streaming
 
-Assistant text from the LLM stream is buffered into Markdown block boundaries on the server. Completed blocks are rendered with goldmark, GitHub Flavored Markdown extensions, and Chroma class-based syntax highlighting, then sanitized with a strict bluemonday policy before they are sent to the browser as SSE `html` events.
+Assistant text from the LLM stream is accumulated on the server. Each non-empty text delta triggers a full server-side render of the current accumulated Markdown with goldmark, GitHub Flavored Markdown extensions, and Chroma class-based syntax highlighting. The rendered preview is sanitized with a strict bluemonday policy before it is sent to the browser as an SSE `preview` event.
 
-The browser appends these sanitized block fragments into the live assistant message. It does not parse Markdown and it does not receive raw assistant text events. Reasoning events remain plain text and are inserted with `textContent`.
+The browser replaces the live assistant message body with each sanitized preview. It does not parse Markdown and it does not receive raw assistant text events. Reasoning events remain plain text and are inserted with `textContent`.
 
-When the LLM sends the terminal completion event, the server flushes any pending Markdown, renders the full assistant message from the complete buffered Markdown, sanitizes it, and includes that final HTML in the `done` event. The browser replaces the live assistant body with `done.html`; this full-message render is the source of truth for completed assistant output.
+When the LLM sends the terminal completion event, the server renders the full assistant message from the complete buffered Markdown, sanitizes it, and includes that final HTML in the `done` event with the response completion timestamp. The browser replaces the live assistant body with `done.html`; this final full-message render is the source of truth for completed assistant output.
 
 ## CLI-First Backend Plan
 

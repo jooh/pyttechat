@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
@@ -31,6 +32,7 @@ const (
 var embeddedFiles embed.FS
 
 var randomReader io.Reader = rand.Reader
+var timeNow = func() time.Time { return time.Now().UTC() }
 
 type Options struct {
 	Client          llm.Client
@@ -478,7 +480,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 	defer stream.Close()
 
 	renderer := markdown.NewRenderer()
-	var streamer markdown.BlockStreamer
+	var fullMarkdown strings.Builder
 	completed := false
 	for {
 		event, err := stream.Next()
@@ -495,7 +497,20 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 
 		switch event.Type {
 		case llm.EventTextDelta:
-			j.emitRenderedBlocks(renderer, streamer.Add(event.Delta))
+			if event.Delta == "" {
+				continue
+			}
+			fullMarkdown.WriteString(event.Delta)
+			html, err := renderer.Render(fullMarkdown.String())
+			if err != nil {
+				log.Printf("markdown preview render failed for turn %s: %v", j.id, err)
+				html = escapedPlainTextHTML(fullMarkdown.String())
+			}
+			j.emit("preview", htmlEvent{
+				TurnID:             j.id,
+				AssistantMessageID: j.assistantMessageID,
+				HTML:               html,
+			})
 		case llm.EventReasoningDelta:
 			j.emit("reasoning", deltaEvent{
 				TurnID:             j.id,
@@ -503,11 +518,10 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				Delta:              event.Delta,
 			})
 		case llm.EventCompleted:
-			j.emitRenderedBlocks(renderer, streamer.Flush())
-			html, err := renderer.Render(streamer.FullMarkdown())
+			html, err := renderer.Render(fullMarkdown.String())
 			if err != nil {
 				log.Printf("markdown final render failed for turn %s: %v", j.id, err)
-				html = escapedPlainTextHTML(streamer.FullMarkdown())
+				html = escapedPlainTextHTML(fullMarkdown.String())
 			}
 			j.emitTerminal("done", doneEvent{
 				TurnID:             j.id,
@@ -515,24 +529,10 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				ResponseID:         event.ResponseID,
 				Usage:              event.Usage,
 				HTML:               html,
+				CompletedAt:        timeNow().UTC().Format(time.RFC3339),
 			})
 			return
 		}
-	}
-}
-
-func (j *turnJob) emitRenderedBlocks(renderer *markdown.Renderer, blocks []string) {
-	for _, block := range blocks {
-		html, err := renderer.RenderBlock(block)
-		if err != nil {
-			log.Printf("markdown block render failed for turn %s: %v", j.id, err)
-			html = escapedPlainTextHTML(block)
-		}
-		j.emit("html", htmlEvent{
-			TurnID:             j.id,
-			AssistantMessageID: j.assistantMessageID,
-			HTML:               html,
-		})
 	}
 }
 
@@ -706,6 +706,7 @@ type doneEvent struct {
 	ResponseID         string        `json:"response_id"`
 	Usage              *llm.Usage    `json:"usage,omitempty"`
 	HTML               template.HTML `json:"html"`
+	CompletedAt        string        `json:"completed_at"`
 }
 
 type abortedEvent struct {

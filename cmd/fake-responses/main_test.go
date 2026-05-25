@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
 )
 
 func TestMainDelegatesToRunAndExit(t *testing.T) {
@@ -132,8 +135,39 @@ func TestRunTreatsServerClosedAsSuccess(t *testing.T) {
 	}
 }
 
+func TestRunPassesStreamDelayOption(t *testing.T) {
+	server := &stubFakeResponsesServer{done: make(chan struct{})}
+	var gotAddr string
+	var gotOpts fakeprovider.Options
+	original := newServer
+	newServer = func(addr string, opts fakeprovider.Options) fakeResponsesServer {
+		gotAddr = addr
+		gotOpts = opts
+		return server
+	}
+	t.Cleanup(func() {
+		newServer = original
+	})
+	sigc := make(chan os.Signal, 1)
+	sigc <- os.Interrupt
+	withSignalChannel(t, sigc)
+	var stderr bytes.Buffer
+
+	code := run([]string{"--addr", "127.0.0.1:9090", "--stream-delay", "250ms"}, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if gotAddr != "127.0.0.1:9090" {
+		t.Fatalf("addr = %q, want flag value", gotAddr)
+	}
+	if gotOpts.StreamDelay != 250*time.Millisecond {
+		t.Fatalf("stream delay = %s, want 250ms", gotOpts.StreamDelay)
+	}
+}
+
 func TestDefaultFactories(t *testing.T) {
-	server := newServer("127.0.0.1:0")
+	server := newServer("127.0.0.1:0", fakeprovider.Options{})
 	httpServer, ok := server.(*http.Server)
 	if !ok {
 		t.Fatalf("newServer type = %T, want *http.Server", server)
@@ -156,7 +190,7 @@ func withFakeResponseServer(t *testing.T, server *stubFakeResponsesServer) {
 		server.done = make(chan struct{})
 	}
 	original := newServer
-	newServer = func(string) fakeResponsesServer {
+	newServer = func(string, fakeprovider.Options) fakeResponsesServer {
 		return server
 	}
 	t.Cleanup(func() {

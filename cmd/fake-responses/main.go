@@ -23,10 +23,10 @@ type fakeResponsesServer interface {
 var (
 	exit       = os.Exit
 	runCommand = run
-	newServer  = func(addr string) fakeResponsesServer {
+	newServer  = func(addr string, opts fakeprovider.Options) fakeResponsesServer {
 		return &http.Server{
 			Addr:              addr,
-			Handler:           fakeprovider.NewHandler(),
+			Handler:           fakeprovider.NewHandlerWithOptions(opts),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 	}
@@ -45,6 +45,7 @@ func run(args []string, stderr io.Writer) int {
 	flags := flag.NewFlagSet("fake-responses", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	addr := flags.String("addr", ":8080", "address for the fake Responses API provider")
+	streamDelay := flags.Duration("stream-delay", 150*time.Millisecond, "delay between streamed fake Responses API events")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -52,7 +53,7 @@ func run(args []string, stderr io.Writer) int {
 		return 2
 	}
 
-	server := newServer(*addr)
+	server := newServer(*addr, fakeprovider.Options{StreamDelay: *streamDelay})
 	errc := make(chan error, 1)
 	go func() {
 		errc <- server.ListenAndServe()

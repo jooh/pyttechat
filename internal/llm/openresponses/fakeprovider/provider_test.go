@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNonStreamingResponseReturnsJSON(t *testing.T) {
@@ -61,25 +62,41 @@ func TestStreamingResponseReturnsFullResponsesLifecycle(t *testing.T) {
 		t.Fatalf("frame count = %d, want full lifecycle: %#v", len(frames), frames)
 	}
 
-	wantPrefix := []string{
-		"response.created",
-		"response.in_progress",
-		"response.output_item.added",
-		"response.content_part.added",
-	}
+	wantPrefix := []string{"response.created", "response.in_progress"}
 	for i, want := range wantPrefix {
 		if frames[i].Event != want {
 			t.Fatalf("frame[%d] event = %q, want %q", i, frames[i].Event, want)
 		}
 	}
 
-	deltaStart := len(wantPrefix)
+	var sawReasoningDelta bool
+	var sawReasoningDone bool
+	deltaStart := 0
+	for i, frame := range frames {
+		switch frame.Event {
+		case "response.reasoning.delta":
+			sawReasoningDelta = true
+		case "response.output_item.done":
+			item, _ := frame.Payload["item"].(map[string]any)
+			if item["type"] == "reasoning" {
+				sawReasoningDone = true
+			}
+		case "response.output_text.delta":
+			deltaStart = i
+			if !sawReasoningDelta || !sawReasoningDone {
+				t.Fatalf("text delta arrived before completed reasoning events: %#v", frames[:i+1])
+			}
+			goto foundTextDelta
+		}
+	}
+foundTextDelta:
+	if deltaStart == 0 {
+		t.Fatalf("stream has no output_text.delta frames: %#v", frames)
+	}
+
 	deltaEnd := deltaStart
 	for deltaEnd < len(frames) && frames[deltaEnd].Event == "response.output_text.delta" {
 		deltaEnd++
-	}
-	if deltaEnd == deltaStart {
-		t.Fatalf("stream has no output_text.delta frames: %#v", frames)
 	}
 
 	wantSuffix := []string{
@@ -100,6 +117,21 @@ func TestStreamingResponseReturnsFullResponsesLifecycle(t *testing.T) {
 		if want == "" && frame.Data != "[DONE]" {
 			t.Fatalf("terminal data = %q, want [DONE]", frame.Data)
 		}
+	}
+}
+
+func TestStreamingResponseHonorsDelayOption(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello","stream":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	delay := 10 * time.Millisecond
+
+	started := time.Now()
+	NewHandlerWithOptions(Options{StreamDelay: delay}).ServeHTTP(recorder, request)
+	elapsed := time.Since(started)
+
+	if elapsed < delay {
+		t.Fatalf("stream elapsed = %s, want at least one configured delay %s", elapsed, delay)
 	}
 }
 
@@ -420,7 +452,7 @@ func TestStreamingStopsCleanlyOnRequestCancellation(t *testing.T) {
 			t.Fatalf("ServeHTTP panicked on canceled request: %v", recovered)
 		}
 	}()
-	NewHandler().ServeHTTP(writer, request)
+	NewHandlerWithOptions(Options{StreamDelay: time.Millisecond}).ServeHTTP(writer, request)
 
 	if writer.flushes == 0 {
 		t.Fatalf("flush count = 0, want at least one event before cancellation")
