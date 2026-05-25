@@ -35,6 +35,12 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	if !strings.Contains(body, `<meta name="csrf-token"`) {
 		t.Fatalf("GET / body does not contain CSRF meta tag: %q", body)
 	}
+	if !strings.Contains(body, `<meta name="color-scheme" content="light dark">`) {
+		t.Fatalf("GET / body does not contain color scheme meta tag: %q", body)
+	}
+	if !strings.Contains(body, `<link rel="stylesheet" href="/assets/vendor/pico.min.css">`) {
+		t.Fatalf("GET / body does not load vendored Pico CSS: %q", body)
+	}
 	if !strings.Contains(body, "Pyttechat") {
 		t.Fatalf("GET / body = %q, want app shell", body)
 	}
@@ -67,6 +73,18 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	}
 	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/css") {
 		t.Fatalf("asset Content-Type = %q, want text/css", got)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/vendor/pico.min.css")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET vendored Pico asset status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/css") {
+		t.Fatalf("vendored Pico Content-Type = %q, want text/css", got)
+	}
+	if !strings.Contains(body, "Pico CSS") {
+		t.Fatalf("vendored Pico asset body = %q, want Pico CSS", body)
 	}
 
 	response, body = get(t, client, server.URL+"/missing")

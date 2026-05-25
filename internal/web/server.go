@@ -28,7 +28,7 @@ const (
 	csrfHeaderName    = "X-CSRF-Token"
 )
 
-//go:embed assets/* templates/*
+//go:embed assets/* assets/vendor/* templates/*
 var embeddedFiles embed.FS
 
 var randomReader io.Reader = rand.Reader
