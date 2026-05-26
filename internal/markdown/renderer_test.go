@@ -71,6 +71,21 @@ func TestRendererSanitizesUnsafeModelHTML(t *testing.T) {
 	}
 }
 
+func TestRendererFencedCodeKeepsPreCodeShapeForClientCopyControls(t *testing.T) {
+	renderer := NewRenderer()
+
+	html, err := renderer.Render("```go\nfmt.Println(1)\n```")
+	if err != nil {
+		t.Fatalf("Render error = %v", err)
+	}
+	got := string(html)
+	for _, want := range []string{"<pre", "<code", "fmt", "Println"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Render output = %q, want code-block substring %q", got, want)
+		}
+	}
+}
+
 func TestRendererRenderBlockUsesSamePolicy(t *testing.T) {
 	renderer := NewRenderer()
 

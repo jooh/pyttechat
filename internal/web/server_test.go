@@ -22,7 +22,10 @@ import (
 )
 
 func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
-	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	server := httptest.NewServer(NewServer(Options{
+		Client: dummy.NewClient(),
+		Model:  "gpt-example",
+	}))
 	defer server.Close()
 
 	client := testHTTPClient(t)
@@ -43,6 +46,19 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	}
 	if !strings.Contains(body, "Pyttechat") {
 		t.Fatalf("GET / body = %q, want app shell", body)
+	}
+	for _, want := range []string{
+		`class="model-chip"`,
+		`gpt-example`,
+		`class="chat-panel"`,
+		`id="scroll-bottom"`,
+		`id="composer-status"`,
+		`aria-label="Send message"`,
+		`aria-label="Stop response"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET / body = %q, want rendered shell substring %q", body, want)
+		}
 	}
 
 	cookies := response.Cookies()
@@ -716,7 +732,10 @@ func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 }
 
 func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
-	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}})}))
+	server := httptest.NewServer(NewServer(Options{
+		Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}}),
+		Model:  "gpt-actions",
+	}))
 	defer server.Close()
 
 	client := testHTTPClient(t)
@@ -744,6 +763,33 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	}
 	if !strings.Contains(body, `message-assistant`) || !strings.Contains(body, `<strong>answer</strong>`) {
 		t.Fatalf("GET / body = %q, want rendered assistant markdown", body)
+	}
+	for _, want := range []string{
+		`<span>You</span>`,
+		`<span>Assistant</span>`,
+		`class="message-model">gpt-actions</span>`,
+		`class="message-actions"`,
+		`data-copy-message`,
+		`aria-label="Copy message"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET / body = %q, want completed message affordance %q", body, want)
+		}
+	}
+}
+
+func TestModelDisplayLabelDefaultsWhenModelUnset(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	response, body := get(t, client, server.URL+"/")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, `Proxy default`) {
+		t.Fatalf("GET / body = %q, want default model label", body)
 	}
 }
 

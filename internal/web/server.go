@@ -101,8 +101,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := pageData{
-		CSRFToken: session.csrf,
-		Messages:  viewMessages(session.chat.Messages(), s.markdown),
+		CSRFToken:  session.csrf,
+		ModelLabel: modelDisplayLabel(s.model),
+		Messages:   viewMessages(session.chat.Messages(), s.markdown),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.template.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -334,14 +335,16 @@ type createTurnResponse struct {
 }
 
 type pageData struct {
-	CSRFToken string
-	Messages  []viewMessage
+	CSRFToken  string
+	ModelLabel string
+	Messages   []viewMessage
 }
 
 type viewMessage struct {
-	Role string
-	Text string
-	HTML template.HTML
+	Role  string
+	Label string
+	Text  string
+	HTML  template.HTML
 }
 
 func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
@@ -352,8 +355,9 @@ func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMes
 			continue
 		}
 		view := viewMessage{
-			Role: string(message.Role),
-			Text: text,
+			Role:  string(message.Role),
+			Label: messageRoleLabel(message.Role),
+			Text:  text,
 		}
 		if message.Role == llm.RoleAssistant {
 			html, err := renderer.Render(text)
@@ -366,6 +370,25 @@ func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMes
 		out = append(out, view)
 	}
 	return out
+}
+
+func messageRoleLabel(role llm.Role) string {
+	switch role {
+	case llm.RoleUser:
+		return "You"
+	case llm.RoleAssistant:
+		return "Assistant"
+	default:
+		return string(role)
+	}
+}
+
+func modelDisplayLabel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "Proxy default"
+	}
+	return model
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

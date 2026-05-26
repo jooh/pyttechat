@@ -13,31 +13,78 @@
   <body>
     <main class="shell">
       <header class="topbar">
-        <h1>Pyttechat</h1>
+        <div>
+          <h1>Pyttechat</h1>
+          <p class="topbar-subtitle">Server-rendered chat</p>
+        </div>
+        <div class="model-chip" aria-label="Active model">
+          <span class="model-chip-label">Model</span>
+          <span class="model-chip-value">{{.ModelLabel}}</span>
+        </div>
       </header>
 
-      <section id="messages" class="messages" aria-live="polite">
-        {{range .Messages}}
-          <article class="message message-{{.Role}}">
-            <div class="message-label">{{.Role}}</div>
-            {{if .HTML}}
-              <div class="message-text markdown-body">{{.HTML}}</div>
-            {{else}}
-              <div class="message-text message-plain">{{.Text}}</div>
-            {{end}}
-          </article>
-        {{else}}
-          <article class="message message-empty">
-            <div class="message-text message-plain">Start a conversation.</div>
-          </article>
-        {{end}}
+      <section class="chat-panel" aria-label="Chat messages">
+        <div id="messages" class="messages" aria-live="polite">
+          {{range .Messages}}
+            <article class="message message-{{.Role}}">
+              <div class="message-header">
+                <div class="message-label">
+                  <span>{{.Label}}</span>
+                  {{if eq .Role "assistant"}}
+                    <span class="message-model">{{$.ModelLabel}}</span>
+                  {{end}}
+                </div>
+              </div>
+              {{if .HTML}}
+                <div class="message-text markdown-body">{{.HTML}}</div>
+              {{else}}
+                <div class="message-text message-plain">{{.Text}}</div>
+              {{end}}
+              <div class="message-actions" aria-label="Message actions">
+                <button class="message-action" type="button" data-copy-message aria-label="Copy message">
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <path d="M8 7h10v13H8z"></path>
+                    <path d="M6 17H4V3h12v2"></path>
+                  </svg>
+                  <span class="sr-only">Copy message</span>
+                </button>
+              </div>
+            </article>
+          {{else}}
+            <article class="message message-empty">
+              <div class="message-text message-plain">Start a conversation.</div>
+            </article>
+          {{end}}
+          <div id="messages-end" class="messages-end" aria-hidden="true"></div>
+        </div>
+        <button id="scroll-bottom" class="scroll-bottom" type="button" aria-label="Scroll to latest message" hidden>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </button>
       </section>
 
-      <form id="chat-form" class="composer">
-        <label class="sr-only" for="prompt">Message</label>
-        <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
-        <button id="stop-button" class="secondary" type="button" disabled>Stop</button>
-        <button id="send-button" type="submit">Send</button>
+      <form id="chat-form" class="composer" aria-label="Chat composer">
+        <div class="composer-box">
+          <label class="sr-only" for="prompt">Message</label>
+          <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
+          <div class="composer-controls">
+            <p id="composer-status" class="composer-status" aria-live="polite">Ready</p>
+            <button id="stop-button" class="icon-button stop-button" type="button" disabled aria-label="Stop response">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M8 8h8v8H8z"></path>
+              </svg>
+              <span class="sr-only">Stop</span>
+            </button>
+            <button id="send-button" class="icon-button send-button" type="submit" aria-label="Send message">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M5 12h14"></path>
+                <path d="m13 6 6 6-6 6"></path>
+              </svg>
+              <span class="sr-only">Send</span>
+            </button>
+          </div>
+        </div>
       </form>
     </main>
   </body>
