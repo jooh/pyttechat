@@ -126,6 +126,12 @@ button {
   outline: 0;
 }
 
+.message-error-detail {
+  margin: 0;
+  color: var(--pico-del-color);
+  font-weight: 600;
+}
+
 .message-header {
   display: flex;
   align-items: baseline;
@@ -590,6 +596,13 @@ button {
   border-radius: 0.9rem;
   background: var(--pico-card-background-color);
   box-shadow: 0 -0.35rem 1.5rem rgba(0, 0, 0, 0.04);
+}
+
+.composer-box:focus-within {
+  border-color: var(--pico-primary);
+  box-shadow:
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
+    0 -0.35rem 1.5rem rgba(0, 0, 0, 0.04);
 }
 
 .composer textarea {

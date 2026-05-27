@@ -99,6 +99,18 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	if !strings.Contains(body, `.markdown-body .chroma`) || !strings.Contains(body, `.chroma .k`) {
 		t.Fatalf("app CSS = %q, want Chroma syntax highlight styles", body)
 	}
+	if !strings.Contains(body, `.composer-box:focus-within`) || !strings.Contains(body, `var(--pico-primary-focus)`) {
+		t.Fatalf("app CSS = %q, want composer focus-within indicator", body)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/app.js")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET JS asset status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, `message-error-detail`) || !strings.Contains(body, `replaceChildren(error)`) {
+		t.Fatalf("app JS = %q, want failed stream messages to replace partial output with an inline error", body)
+	}
 
 	response, body = get(t, client, server.URL+"/assets/vendor/pico.min.css")
 	defer response.Body.Close()

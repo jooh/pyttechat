@@ -250,9 +250,14 @@
   function markTurnError(assistant, message) {
     assistant.article.classList.remove('message-streaming');
     assistant.article.classList.add('message-error');
-    if (!assistant.text.textContent) {
-      assistant.text.textContent = message;
+    const reasoning = assistant.article.querySelector('.reasoning');
+    if (reasoning) {
+      reasoning.remove();
     }
+    const error = document.createElement('p');
+    error.className = 'message-error-detail';
+    error.textContent = message;
+    assistant.text.replaceChildren(error);
   }
 
   function languageFromCode(code) {
