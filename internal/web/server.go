@@ -82,6 +82,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/" && r.Method == http.MethodGet:
 		s.handleIndex(w, r)
+	case r.URL.Path == "/favicon.ico" && r.Method == http.MethodGet:
+		w.WriteHeader(http.StatusNoContent)
 	case r.URL.Path == "/chat/turns" && r.Method == http.MethodPost:
 		s.handleCreateTurn(w, r)
 	case strings.HasPrefix(r.URL.Path, "/chat/turns/"):

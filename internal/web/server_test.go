@@ -82,7 +82,13 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	defer server.Close()
 
 	client := testHTTPClient(t)
-	response, body := get(t, client, server.URL+"/assets/app.css")
+	response, body := get(t, client, server.URL+"/favicon.ico")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("GET favicon status = %d, want 204; body = %q", response.StatusCode, body)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/app.css")
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET asset status = %d, want 200; body = %q", response.StatusCode, body)
