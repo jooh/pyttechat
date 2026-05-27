@@ -133,6 +133,51 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 	}
 }
 
+func TestClientStreamsReasoningTextEventsFromLocalResponsesShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"rs_1","type":"reasoning","status":"in_progress","summary":[],"content":[]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.content_part.added","sequence_number":2,"item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.reasoning_text.delta","sequence_number":3,"item_id":"rs_1","output_index":0,"content_index":0,"delta":"Think"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":{"id":"rs_1","type":"reasoning","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"Thinking done"}],"encrypted_content":"encrypted"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.added","sequence_number":5,"output_index":1,"item":{"id":"msg_1","type":"message","status":"in_progress","content":[],"role":"assistant"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.content_part.added","sequence_number":6,"item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","sequence_number":7,"item_id":"msg_1","output_index":1,"content_index":0,"delta":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.done","sequence_number":8,"item_id":"msg_1","output_index":1,"content_index":0,"text":"Hello"}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","sequence_number":9,"output_index":1,"item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"Hello","annotations":[]}],"role":"assistant"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":10,"response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3,"output_tokens_details":{"reasoning_tokens":4}}}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+
+	events := drainEvents(t, stream)
+	if len(events) != 4 {
+		t.Fatalf("event count = %d, want reasoning, reasoning item, text, completed: %#v", len(events), events)
+	}
+	if events[0].Type != llm.EventReasoningDelta || events[0].Delta != "Think" {
+		t.Fatalf("first event = %#v, want reasoning_text delta", events[0])
+	}
+	if events[1].Type != llm.EventOutputItemDone || events[1].Part.Type != llm.PartReasoning {
+		t.Fatalf("second event = %#v, want completed reasoning part", events[1])
+	}
+	if events[1].Part.Text != "Thinking done" || events[1].Part.ID != "rs_1" || events[1].Part.EncryptedContent != "encrypted" {
+		t.Fatalf("reasoning part = %#v, want final reasoning text and metadata", events[1].Part)
+	}
+	if events[2].Type != llm.EventTextDelta || events[2].Delta != "Hello" {
+		t.Fatalf("third event = %#v, want assistant text", events[2])
+	}
+	if events[3].ResponseID != "resp_1" || events[3].Usage == nil || events[3].Usage.ReasoningTokens != 4 {
+		t.Fatalf("completed event = %#v, want response id and reasoning usage", events[3])
+	}
+}
+
 func TestClientBuildsResponsesURLWithExistingPath(t *testing.T) {
 	client := NewClient("https://proxy.example/base/")
 

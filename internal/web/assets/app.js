@@ -179,7 +179,6 @@
   function ensureReasoning(article) {
     let details = article.querySelector('.reasoning');
     if (details) {
-      details.open = true;
       return details.querySelector('.reasoning-content');
     }
     details = document.createElement('details');
@@ -196,13 +195,6 @@
     const body = article.querySelector('.message-text');
     article.insertBefore(details, body);
     return content;
-  }
-
-  function closeReasoning(article) {
-    const details = article.querySelector('.reasoning');
-    if (details) {
-      details.open = false;
-    }
   }
 
   function setCompletedAt(assistant, completedAt) {
@@ -450,9 +442,6 @@
       }
       assistant.text.innerHTML = data.html || '';
       enhanceMessage(assistant.article);
-      if (data.html) {
-        closeReasoning(assistant.article);
-      }
       scrollToBottom(false, wasNearBottom);
     });
 

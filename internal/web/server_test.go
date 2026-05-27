@@ -96,6 +96,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/css") {
 		t.Fatalf("asset Content-Type = %q, want text/css", got)
 	}
+	if !strings.Contains(body, `.markdown-body .chroma`) || !strings.Contains(body, `.chroma .k`) {
+		t.Fatalf("app CSS = %q, want Chroma syntax highlight styles", body)
+	}
 
 	response, body = get(t, client, server.URL+"/assets/vendor/pico.min.css")
 	defer response.Body.Close()

@@ -282,7 +282,7 @@ func (s *stream) mapPayload(payload map[string]any) (llm.Event, bool, error) {
 			Type:  llm.EventTextDelta,
 			Delta: text,
 		}, true, nil
-	case "response.reasoning.delta", "response.reasoning_summary_text.delta":
+	case "response.reasoning.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		return llm.Event{
 			Type:  llm.EventReasoningDelta,
 			Delta: stringField(payload, "delta"),
