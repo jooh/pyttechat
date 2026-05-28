@@ -458,6 +458,7 @@
         return;
       }
       clearStreamErrorTimer();
+      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       if (data.assistant_message_id && !assistant.article.dataset.messageId) {
         assistant.article.id = `message-${data.assistant_message_id}`;
@@ -466,7 +467,7 @@
       }
       assistant.text.innerHTML = data.html || '';
       enhanceMessage(assistant.article);
-      updateScrollButton();
+      scrollToBottom(false, wasNearBottom);
     });
 
     currentSource.addEventListener('reasoning', function (event) {
@@ -474,9 +475,10 @@
         return;
       }
       clearStreamErrorTimer();
+      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       ensureThinkingStatus(assistant.article).textContent += data.delta || '';
-      updateScrollButton();
+      scrollToBottom(false, wasNearBottom);
     });
 
     currentSource.addEventListener('done', function (event) {
@@ -484,6 +486,7 @@
         return;
       }
       clearStreamErrorTimer();
+      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       if (typeof data.html === 'string') {
         assistant.text.innerHTML = data.html;
@@ -496,7 +499,7 @@
       if (!assistantHasContent(assistant)) {
         removeMessage(assistant);
       }
-      updateScrollButton();
+      scrollToBottom(false, wasNearBottom);
       finishTurn('Response complete');
     });
 

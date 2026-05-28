@@ -133,6 +133,8 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`completeThinkingStatus`,
 		`aria-expanded`,
 		`thinking...`,
+		`const wasNearBottom = isNearBottom();`,
+		`scrollToBottom(false, wasNearBottom);`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
