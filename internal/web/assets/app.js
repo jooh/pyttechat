@@ -1,6 +1,5 @@
 (function () {
   const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-  const modelLabel = document.querySelector('.model-chip-value')?.textContent || 'Assistant';
   const messages = document.getElementById('messages');
   const messagesEnd = document.getElementById('messages-end');
   const scrollButton = document.getElementById('scroll-bottom');
@@ -19,6 +18,7 @@
   let streamErrorTimer = null;
   let abortRequested = false;
   let creatingTurn = false;
+  let statusIDCounter = 0;
 
   function csrfHeaderName() {
     return 'X-CSRF-Token';
@@ -87,38 +87,6 @@
     removeMessage(user);
   }
 
-  function roleLabel(role) {
-    if (role === 'user') {
-      return 'You';
-    }
-    if (role === 'assistant') {
-      return 'Assistant';
-    }
-    return role;
-  }
-
-  function createMessageHeader(role) {
-    const header = document.createElement('div');
-    header.className = 'message-header';
-
-    const label = document.createElement('div');
-    label.className = 'message-label';
-
-    const name = document.createElement('span');
-    name.textContent = roleLabel(role);
-    label.append(name);
-
-    if (role === 'assistant') {
-      const model = document.createElement('span');
-      model.className = 'message-model';
-      model.textContent = modelLabel;
-      label.append(model);
-    }
-
-    header.append(label);
-    return header;
-  }
-
   function createMessageActions() {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
@@ -135,6 +103,77 @@
     return actions;
   }
 
+  function nextStatusContentID() {
+    statusIDCounter += 1;
+    return `message-status-content-${statusIDCounter}`;
+  }
+
+  function createThinkingStatus() {
+    const status = document.createElement('div');
+    status.className = 'message-status';
+    status.dataset.statusKind = 'thinking';
+    status.dataset.statusState = 'active';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'message-status-toggle status-sweep';
+    toggle.type = 'button';
+    toggle.dataset.statusToggle = '';
+    toggle.textContent = 'thinking...';
+    toggle.setAttribute('aria-expanded', 'false');
+
+    const content = document.createElement('div');
+    content.className = 'message-status-content';
+    content.id = nextStatusContentID();
+    content.hidden = true;
+
+    toggle.setAttribute('aria-controls', content.id);
+    status.append(toggle, content);
+    return status;
+  }
+
+  function ensureThinkingStatus(article) {
+    let status = article.querySelector('.message-status[data-status-kind="thinking"]');
+    if (!status) {
+      status = createThinkingStatus();
+      const body = article.querySelector('.message-text');
+      article.insertBefore(status, body);
+    }
+    return status.querySelector('.message-status-content');
+  }
+
+  function completeThinkingStatus(article) {
+    const status = article.querySelector('.message-status[data-status-kind="thinking"]');
+    if (!status) {
+      return;
+    }
+    const content = status.querySelector('.message-status-content');
+    if (!content || !content.textContent) {
+      status.remove();
+      return;
+    }
+    const toggle = status.querySelector('.message-status-toggle');
+    status.dataset.statusState = 'complete';
+    if (toggle) {
+      toggle.classList.remove('status-sweep');
+      toggle.textContent = 'thinking';
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+    content.hidden = true;
+  }
+
+  function toggleStatusContent(toggle) {
+    const contentID = toggle.getAttribute('aria-controls');
+    const content = contentID
+      ? document.getElementById(contentID)
+      : toggle.closest('.message-status')?.querySelector('.message-status-content');
+    if (!content) {
+      return;
+    }
+    const expanded = toggle.getAttribute('aria-expanded') === 'true';
+    toggle.setAttribute('aria-expanded', String(!expanded));
+    content.hidden = expanded;
+  }
+
   function addMessage(role, text, options) {
     clearEmptyState();
     const article = document.createElement('article');
@@ -147,7 +186,10 @@
     messageText.className = role === 'assistant' ? 'message-text markdown-body' : 'message-text message-plain';
     messageText.textContent = text || '';
 
-    article.append(createMessageHeader(role), messageText, createMessageActions());
+    if (role === 'assistant' && options && options.streaming) {
+      article.append(createThinkingStatus());
+    }
+    article.append(messageText, createMessageActions());
     insertMessage(article);
     scrollToBottom(true, true);
     return { article, text: messageText };
@@ -172,29 +214,8 @@
     if (assistant.text.textContent || assistant.text.innerHTML) {
       return true;
     }
-    const reasoning = assistant.article.querySelector('.reasoning-content');
-    return Boolean(reasoning && reasoning.textContent);
-  }
-
-  function ensureReasoning(article) {
-    let details = article.querySelector('.reasoning');
-    if (details) {
-      return details.querySelector('.reasoning-content');
-    }
-    details = document.createElement('details');
-    details.className = 'reasoning';
-    details.open = true;
-
-    const summary = document.createElement('summary');
-    summary.textContent = 'Reasoning';
-
-    const content = document.createElement('div');
-    content.className = 'reasoning-content';
-
-    details.append(summary, content);
-    const body = article.querySelector('.message-text');
-    article.insertBefore(details, body);
-    return content;
+    const status = assistant.article.querySelector('.message-status-content');
+    return Boolean(status && status.textContent);
   }
 
   function setCompletedAt(assistant, completedAt) {
@@ -244,15 +265,14 @@
     creatingTurn = false;
     updateComposerState();
     setStatus(status || 'Ready');
-    prompt.focus();
   }
 
   function markTurnError(assistant, message) {
     assistant.article.classList.remove('message-streaming');
     assistant.article.classList.add('message-error');
-    const reasoning = assistant.article.querySelector('.reasoning');
-    if (reasoning) {
-      reasoning.remove();
+    const status = assistant.article.querySelector('.message-status');
+    if (status) {
+      status.remove();
     }
     const error = document.createElement('p');
     error.className = 'message-error-detail';
@@ -438,7 +458,6 @@
         return;
       }
       clearStreamErrorTimer();
-      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       if (data.assistant_message_id && !assistant.article.dataset.messageId) {
         assistant.article.id = `message-${data.assistant_message_id}`;
@@ -447,7 +466,7 @@
       }
       assistant.text.innerHTML = data.html || '';
       enhanceMessage(assistant.article);
-      scrollToBottom(false, wasNearBottom);
+      updateScrollButton();
     });
 
     currentSource.addEventListener('reasoning', function (event) {
@@ -455,10 +474,9 @@
         return;
       }
       clearStreamErrorTimer();
-      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
-      ensureReasoning(assistant.article).textContent += data.delta || '';
-      scrollToBottom(false, wasNearBottom);
+      ensureThinkingStatus(assistant.article).textContent += data.delta || '';
+      updateScrollButton();
     });
 
     currentSource.addEventListener('done', function (event) {
@@ -466,19 +484,19 @@
         return;
       }
       clearStreamErrorTimer();
-      const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       if (typeof data.html === 'string') {
         assistant.text.innerHTML = data.html;
         enhanceMessage(assistant.article);
       }
       setCompletedAt(assistant, data.completed_at);
+      completeThinkingStatus(assistant.article);
       assistant.article.classList.remove('message-streaming');
       assistant.article.classList.add('message-complete');
       if (!assistantHasContent(assistant)) {
         removeMessage(assistant);
       }
-      scrollToBottom(false, wasNearBottom);
+      updateScrollButton();
       finishTurn('Response complete');
     });
 
@@ -618,6 +636,12 @@
           setStatus('Copy failed');
         }
       }
+      return;
+    }
+
+    const statusToggle = event.target.closest('[data-status-toggle]');
+    if (statusToggle) {
+      toggleStatusContent(statusToggle);
       return;
     }
 

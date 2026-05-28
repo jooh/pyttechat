@@ -102,6 +102,23 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	if !strings.Contains(body, `.composer-box:focus-within`) || !strings.Contains(body, `var(--pico-primary-focus)`) {
 		t.Fatalf("app CSS = %q, want composer focus-within indicator", body)
 	}
+	for _, want := range []string{
+		`status-sweep`,
+		`@keyframes status-sweep`,
+		`.message-status`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app CSS = %q, want streaming UI style %q", body, want)
+		}
+	}
+	for _, unwanted := range []string{
+		`@keyframes blink`,
+		`message-text:empty::after`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("app CSS = %q, did not expect removed streaming cursor style %q", body, unwanted)
+		}
+	}
 
 	response, body = get(t, client, server.URL+"/assets/app.js")
 	defer response.Body.Close()
@@ -110,6 +127,19 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	}
 	if !strings.Contains(body, `message-error-detail`) || !strings.Contains(body, `replaceChildren(error)`) {
 		t.Fatalf("app JS = %q, want failed stream messages to replace partial output with an inline error", body)
+	}
+	for _, want := range []string{
+		`ensureThinkingStatus`,
+		`completeThinkingStatus`,
+		`aria-expanded`,
+		`thinking...`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
+		}
+	}
+	if strings.Contains(body, `prompt.focus()`) {
+		t.Fatalf("app JS = %q, did not expect turn completion to focus composer", body)
 	}
 
 	response, body = get(t, client, server.URL+"/assets/vendor/pico.min.css")
@@ -786,15 +816,22 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 		t.Fatalf("GET / body = %q, want rendered assistant markdown", body)
 	}
 	for _, want := range []string{
-		`<span>You</span>`,
-		`<span>Assistant</span>`,
-		`class="message-model">gpt-actions</span>`,
 		`class="message-actions"`,
 		`data-copy-message`,
 		`aria-label="Copy message"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want completed message affordance %q", body, want)
+		}
+	}
+	for _, unwanted := range []string{
+		`class="message-header"`,
+		`class="message-model">gpt-actions</span>`,
+		`<span>You</span>`,
+		`<span>Assistant</span>`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("GET / body = %q, did not expect per-message chrome %q", body, unwanted)
 		}
 	}
 }

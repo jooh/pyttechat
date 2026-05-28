@@ -95,34 +95,40 @@ button {
 
 .message {
   position: relative;
-  width: fit-content;
-  max-width: min(46rem, 92%);
+  width: 100%;
+  max-width: 100%;
   margin: 0;
-  padding: 0.875rem 1rem;
-  border: var(--pico-border-width) solid var(--pico-muted-border-color);
-  border-radius: 0.75rem;
-  background: var(--pico-card-background-color);
-  box-shadow: 0 0.35rem 1.4rem rgba(0, 0, 0, 0.04);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   overflow-wrap: anywhere;
 }
 
 .message-user {
-  align-self: flex-end;
-  background: color-mix(in srgb, var(--pico-primary-background, var(--pico-primary)) 16%, var(--pico-card-background-color));
+  align-self: stretch;
+  padding: 0.875rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--pico-color);
+  color: var(--pico-background-color);
 }
 
-.message-assistant,
+.message-assistant {
+  align-self: stretch;
+}
+
 .message-empty {
   align-self: flex-start;
-}
-
-.message-empty {
+  width: fit-content;
   max-width: min(34rem, 100%);
   color: var(--pico-muted-color);
 }
 
 .message-error {
-  border-color: var(--pico-del-color);
+  padding: 0.875rem 1rem;
+  border: var(--pico-border-width) solid var(--pico-del-color);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--pico-del-color) 7%, transparent);
   outline: 0;
 }
 
@@ -132,53 +138,8 @@ button {
   font-weight: 600;
 }
 
-.message-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
-}
-
-.message-label {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.45rem;
-  color: var(--pico-muted-color);
-  font-size: 0.75rem;
-  font-weight: 700;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.message-model {
-  max-width: 16rem;
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  text-transform: none;
-  white-space: nowrap;
-}
-
 .message-text {
   min-width: 0;
-}
-
-.message-streaming .message-text:empty::after,
-.message-streaming .message-text:not(:empty)::after {
-  content: "";
-  display: inline-block;
-  width: 0.45rem;
-  height: 1em;
-  margin-left: 0.2rem;
-  vertical-align: -0.15em;
-  background: currentColor;
-  animation: blink 1s steps(2, start) infinite;
-}
-
-.message-complete .message-text::after {
-  content: none;
 }
 
 .message-plain {
@@ -467,20 +428,84 @@ button {
   }
 }
 
-.reasoning {
-  margin: 0 0 0.75rem;
+.message-status {
+  margin: 0 0 0.625rem;
   color: var(--pico-muted-color);
-}
-
-.reasoning summary {
-  cursor: pointer;
   font-size: 0.875rem;
-  font-weight: 600;
+  line-height: 1.4;
 }
 
-.reasoning-content {
+.message-status-toggle {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  text-align: left;
+}
+
+.message-status-toggle:hover,
+.message-status-toggle:focus-visible {
+  color: var(--pico-color);
+}
+
+.message-status-content {
   margin-top: 0.5rem;
+  color: var(--pico-muted-color);
   white-space: pre-wrap;
+}
+
+.status-sweep {
+  --status-sweep-base: var(--pico-color);
+  --status-sweep-edge: color-mix(in srgb, var(--pico-color) 72%, var(--pico-background-color));
+  --status-sweep-mid: color-mix(in srgb, var(--pico-color) 50%, var(--pico-background-color));
+  --status-sweep-low: color-mix(in srgb, var(--pico-color) 25%, var(--pico-background-color));
+  display: inline-block;
+  background-image: linear-gradient(
+    90deg,
+    var(--status-sweep-base) 0%,
+    var(--status-sweep-base) 36%,
+    var(--status-sweep-edge) 43%,
+    var(--status-sweep-mid) 47%,
+    var(--status-sweep-low) 50%,
+    var(--status-sweep-mid) 53%,
+    var(--status-sweep-edge) 57%,
+    var(--status-sweep-base) 64%,
+    var(--status-sweep-base) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: status-sweep 1.05s linear infinite;
+}
+
+@keyframes status-sweep {
+  from {
+    background-position: 125% 0;
+  }
+
+  to {
+    background-position: -125% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-sweep {
+    background-image: none;
+    color: var(--pico-muted-color);
+    -webkit-text-fill-color: currentColor;
+    animation: none;
+  }
 }
 
 .message-completed-at {
@@ -494,9 +519,9 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 0.25rem;
-  min-height: 2rem;
-  margin-top: 0.625rem;
-  opacity: 0.72;
+  min-height: 1.75rem;
+  margin-top: 0.35rem;
+  opacity: 0.28;
   transition: opacity 120ms ease;
 }
 
@@ -532,6 +557,20 @@ button {
 .message-action:focus-visible {
   background: var(--pico-muted-border-color);
   color: var(--pico-color);
+}
+
+.message-user .message-actions {
+  opacity: 0.58;
+}
+
+.message-user .message-action {
+  color: var(--pico-background-color);
+}
+
+.message-user .message-action:hover,
+.message-user .message-action:focus-visible {
+  background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
+  color: var(--pico-background-color);
 }
 
 .message-action svg,
@@ -666,12 +705,6 @@ button {
   white-space: nowrap;
 }
 
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
-}
-
 @media (max-width: 640px) {
   .shell {
     padding-inline: 0.75rem;
@@ -686,13 +719,9 @@ button {
     display: none;
   }
 
-  .message {
-    max-width: 100%;
+  .message-user,
+  .message-error {
     padding: 0.8rem 0.875rem;
-  }
-
-  .message-model {
-    max-width: 9rem;
   }
 
   .composer {

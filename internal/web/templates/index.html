@@ -27,14 +27,6 @@
         <div id="messages" class="messages" aria-live="polite">
           {{range .Messages}}
             <article class="message message-{{.Role}}">
-              <div class="message-header">
-                <div class="message-label">
-                  <span>{{.Label}}</span>
-                  {{if eq .Role "assistant"}}
-                    <span class="message-model">{{$.ModelLabel}}</span>
-                  {{end}}
-                </div>
-              </div>
               {{if .HTML}}
                 <div class="message-text markdown-body">{{.HTML}}</div>
               {{else}}
