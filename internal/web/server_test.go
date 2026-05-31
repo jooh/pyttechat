@@ -476,6 +476,9 @@ func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	if requests[0].Reasoning.Effort != "medium" || requests[0].Reasoning.Summary != "auto" {
 		t.Fatalf("request reasoning = %#v, want medium effort with auto summary", requests[0].Reasoning)
 	}
+	if requests[0].Instructions != chat.WebRenderingInstructions() {
+		t.Fatalf("request instructions = %q, want shared web rendering instructions", requests[0].Instructions)
+	}
 }
 
 func TestSubscriberDisconnectDoesNotCancelTurnJob(t *testing.T) {

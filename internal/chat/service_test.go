@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"example.com/llm-chat-web/internal/llm"
@@ -132,6 +133,86 @@ func TestSessionSendIncludesPriorTurnsAndReasoning(t *testing.T) {
 	}
 	if priorReasoning.EncryptedContent != "encrypted_first" {
 		t.Fatalf("prior encrypted content = %q, want encrypted_first", priorReasoning.EncryptedContent)
+	}
+}
+
+func TestSessionSendIncludesRenderingInstructionsWithoutPersistingThem(t *testing.T) {
+	client := dummy.NewClient(
+		dummy.Turn{TextChunks: []string{"first answer"}},
+		dummy.Turn{TextChunks: []string{"second answer"}},
+	)
+	session := NewService(client).NewSession()
+
+	first, err := session.Send(context.Background(), "first", SendOptions{
+		RenderingInstructions: "  render for web  ",
+	})
+	if err != nil {
+		t.Fatalf("first Send() error = %v, want nil", err)
+	}
+	collectEvents(t, first)
+
+	second, err := session.Send(context.Background(), "second", SendOptions{
+		RenderingInstructions: "render for web",
+	})
+	if err != nil {
+		t.Fatalf("second Send() error = %v, want nil", err)
+	}
+	collectEvents(t, second)
+
+	requests := client.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	for i, request := range requests {
+		if request.Instructions != "render for web" {
+			t.Fatalf("request %d instructions = %q, want trimmed rendering instructions", i, request.Instructions)
+		}
+		for _, message := range request.Messages {
+			if message.Role == llm.RoleSystem {
+				t.Fatalf("request %d messages = %#v, did not expect persisted system message", i, request.Messages)
+			}
+		}
+	}
+	if len(requests[1].Messages) != 3 {
+		t.Fatalf("second request message count = %d, want prior user, assistant, next user", len(requests[1].Messages))
+	}
+	if messages := session.Messages(); len(messages) != 4 {
+		t.Fatalf("stored message count = %d, want only two user/assistant turns", len(messages))
+	}
+}
+
+func TestWebRenderingInstructionsDescribeSupportedOutputWithoutOverpromising(t *testing.T) {
+	prompt := WebRenderingInstructions()
+	for _, want := range []string{
+		"sanitized Markdown",
+		"GFM tables",
+		"fenced code blocks",
+		"language identifiers",
+		"\\(...\\)",
+		"$$...$$",
+		"```mermaid",
+		":::artifact title=\"Short title\" type=\"text/markdown\"",
+		"text/markdown",
+		"text/md",
+		"application/vnd.mermaid",
+		"application/vnd.code",
+		"preserve them",
+		"do not invent them",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("WebRenderingInstructions() = %q, want substring %q", prompt, want)
+		}
+	}
+
+	for _, unsupportedClaim := range []string{
+		"text/html",
+		"React components are supported",
+		"SVG rendering is supported",
+		"single-dollar inline math is supported",
+	} {
+		if strings.Contains(prompt, unsupportedClaim) {
+			t.Fatalf("WebRenderingInstructions() = %q, did not expect unsupported claim %q", prompt, unsupportedClaim)
+		}
 	}
 }
 

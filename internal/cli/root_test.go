@@ -113,6 +113,11 @@ func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
 	if len(requestBodies) != 2 {
 		t.Fatalf("request count = %d, want 2", len(requestBodies))
 	}
+	for i, body := range requestBodies {
+		if body["instructions"] != chat.WebRenderingInstructions() {
+			t.Fatalf("request %d instructions = %v, want shared web rendering instructions", i, body["instructions"])
+		}
+	}
 
 	input := requireSlice(t, requestBodies[1]["input"], "input")
 	if len(input) != 4 {
@@ -133,6 +138,40 @@ func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
 	}
 	if secondUser["role"] != "user" || secondUser["content"] != "second" {
 		t.Fatalf("second input = %#v, want second user turn", secondUser)
+	}
+}
+
+func TestAskCommandSendsRenderingInstructionsToProxy(t *testing.T) {
+	var requestBody map[string]any
+	handler := fakeprovider.NewHandler()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll request body error = %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(rawBody))
+
+		if err := json.Unmarshal(rawBody, &requestBody); err != nil {
+			t.Fatalf("Decode request body error = %v", err)
+		}
+
+		handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", server.URL)
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "hello"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if requestBody["instructions"] != chat.WebRenderingInstructions() {
+		t.Fatalf("request instructions = %v, want shared web rendering instructions", requestBody["instructions"])
 	}
 }
 
@@ -556,6 +595,9 @@ func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
 	body := bodies[0]
 	if body["model"] != "served-model" {
 		t.Fatalf("proxy request model = %v, want served-model", body["model"])
+	}
+	if body["instructions"] != chat.WebRenderingInstructions() {
+		t.Fatalf("proxy request instructions = %v, want shared web rendering instructions", body["instructions"])
 	}
 	reasoning, ok := body["reasoning"].(map[string]any)
 	if !ok {

@@ -82,7 +82,8 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 
 	client := NewClient(server.URL)
 	stream, err := client.Stream(context.Background(), llm.Request{
-		Model: "test-model",
+		Model:        "test-model",
+		Instructions: "render as sanitized markdown",
 		Reasoning: llm.ReasoningOptions{
 			Summary: "auto",
 			Effort:  "low",
@@ -116,6 +117,9 @@ func TestClientStreamsOpenResponsesEvents(t *testing.T) {
 
 	if requestBody["model"] != "test-model" {
 		t.Fatalf("request model = %v, want test-model", requestBody["model"])
+	}
+	if requestBody["instructions"] != "render as sanitized markdown" {
+		t.Fatalf("request instructions = %v, want rendering instructions", requestBody["instructions"])
 	}
 	if requestBody["stream"] != true {
 		t.Fatalf("request stream = %v, want true", requestBody["stream"])

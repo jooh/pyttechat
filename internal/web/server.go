@@ -163,8 +163,9 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 	session.mu.Unlock()
 
 	go turn.run(session.chat, chat.SendOptions{
-		Model:           s.model,
-		ReasoningEffort: s.reasoningEffort,
+		Model:                 s.model,
+		ReasoningEffort:       s.reasoningEffort,
+		RenderingInstructions: chat.WebRenderingInstructions(),
 	})
 
 	writeJSON(w, http.StatusCreated, createTurnResponse{

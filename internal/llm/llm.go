@@ -96,9 +96,10 @@ type ReasoningOptions struct {
 }
 
 type Request struct {
-	Model     string
-	Messages  []Message
-	Reasoning ReasoningOptions
+	Model        string
+	Instructions string
+	Messages     []Message
+	Reasoning    ReasoningOptions
 }
 
 func (r Request) Clone() Request {

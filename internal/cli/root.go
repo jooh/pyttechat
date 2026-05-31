@@ -158,8 +158,9 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 
 			session := chat.NewService(newLLMClient(*opts)).NewSession()
 			stream, err := session.Send(cmd.Context(), strings.Join(args, " "), chat.SendOptions{
-				Model:           opts.model,
-				ReasoningEffort: opts.reasoningEffort,
+				Model:                 opts.model,
+				ReasoningEffort:       opts.reasoningEffort,
+				RenderingInstructions: chat.WebRenderingInstructions(),
 			})
 			if err != nil {
 				if errors.Is(err, chat.ErrEmptyPrompt) {
@@ -183,8 +184,9 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 			scanner := bufio.NewScanner(stdin)
 			for scanner.Scan() {
 				stream, err := session.Send(cmd.Context(), scanner.Text(), chat.SendOptions{
-					Model:           opts.model,
-					ReasoningEffort: opts.reasoningEffort,
+					Model:                 opts.model,
+					ReasoningEffort:       opts.reasoningEffort,
+					RenderingInstructions: chat.WebRenderingInstructions(),
 				})
 				if err != nil {
 					if errors.Is(err, chat.ErrEmptyPrompt) {

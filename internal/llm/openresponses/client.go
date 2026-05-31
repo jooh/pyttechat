@@ -106,6 +106,9 @@ func (c *Client) createRequestBody(request llm.Request) map[string]any {
 	if request.Model != "" {
 		body["model"] = request.Model
 	}
+	if instructions := strings.TrimSpace(request.Instructions); instructions != "" {
+		body["instructions"] = instructions
+	}
 
 	reasoning := map[string]any{}
 	if request.Reasoning.Summary != "" {

@@ -34,8 +34,9 @@ type Session struct {
 }
 
 type SendOptions struct {
-	Model           string
-	ReasoningEffort string
+	Model                 string
+	ReasoningEffort       string
+	RenderingInstructions string
 }
 
 func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*TurnStream, error) {
@@ -46,7 +47,8 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 
 	userMessage := llm.NewTextMessage(llm.RoleUser, prompt)
 	request := llm.Request{
-		Model: opts.Model,
+		Model:        opts.Model,
+		Instructions: strings.TrimSpace(opts.RenderingInstructions),
 	}
 	if effort := strings.TrimSpace(opts.ReasoningEffort); effort != "" {
 		request.Reasoning = llm.ReasoningOptions{
