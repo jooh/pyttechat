@@ -251,6 +251,44 @@ func TestSessionMergesCompletedTextPartWithoutDuplicatingDeltas(t *testing.T) {
 	}
 }
 
+func TestSessionAppendsCompletedTextAfterNonTextPart(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventTextDelta, Delta: "intro"},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartError, Text: "model warning"}},
+			{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartText, Text: "outro"}},
+			{Type: llm.EventCompleted},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(messages))
+	}
+	parts := messages[1].Parts
+	if len(parts) != 3 {
+		t.Fatalf("assistant parts = %#v, want text, error, text", parts)
+	}
+	if parts[0].Type != llm.PartText || parts[0].Text != "intro" {
+		t.Fatalf("first assistant part = %#v, want intro text", parts[0])
+	}
+	if parts[1].Type != llm.PartError || parts[1].Text != "model warning" {
+		t.Fatalf("second assistant part = %#v, want error", parts[1])
+	}
+	if parts[2].Type != llm.PartText || parts[2].Text != "outro" {
+		t.Fatalf("third assistant part = %#v, want outro text", parts[2])
+	}
+	if got := messages[1].Text(); got != "introoutro" {
+		t.Fatalf("assistant text = %q, want introoutro", got)
+	}
+}
+
 func TestSessionStoresCompletedPartsWithoutPriorDeltas(t *testing.T) {
 	session := NewService(eventClient{
 		events: []llm.Event{

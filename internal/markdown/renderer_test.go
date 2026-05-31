@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -50,8 +51,8 @@ func TestRendererRenderMarkdownAndGFM(t *testing.T) {
 		},
 		{
 			name: "safe local images",
-			in:   `![Plot](/chat/files/file_123 "Generated plot")`,
-			want: []string{`<img src="/chat/files/file_123"`, `alt="Plot"`, `title="Generated plot"`},
+			in:   `![Plot](/assets/app.css "Generated plot")`,
+			want: []string{`<img src="/assets/app.css"`, `alt="Plot"`, `title="Generated plot"`},
 		},
 		{
 			name: "math delimiters survive for client rendering",
@@ -126,6 +127,28 @@ func TestRendererDecoratesCitationMarkers(t *testing.T) {
 	}
 }
 
+func TestRendererDecoratesCitationsOnlyInTextNodes(t *testing.T) {
+	renderer := NewRenderer()
+
+	html, err := renderer.Render("[link](https://example.com \"【turn1search0】\")\n\n```text\n【turn1search1】\n```\n\nVisible 【turn1search2】.")
+	if err != nil {
+		t.Fatalf("Render error = %v", err)
+	}
+	got := string(html)
+	if count := strings.Count(got, `class="citation-chip"`); count != 1 {
+		t.Fatalf("Render output = %q, citation chip count = %d, want only visible text citation decorated", got, count)
+	}
+	if !strings.Contains(got, `title="【turn1search0】"`) {
+		t.Fatalf("Render output = %q, want citation marker preserved in title attribute", got)
+	}
+	if !strings.Contains(got, `【turn1search1】`) {
+		t.Fatalf("Render output = %q, want citation marker preserved in code block", got)
+	}
+	if !strings.Contains(got, `data-citation="turn1search2"`) {
+		t.Fatalf("Render output = %q, want visible citation decorated", got)
+	}
+}
+
 func TestCitationMatchesFindsSourceMarkers(t *testing.T) {
 	matches := citationMatches("Answer 【turn1search0】.")
 	if len(matches) != 1 || matches[0].id != "turn1search0" {
@@ -177,6 +200,74 @@ func TestRendererSanitizesUnsafeImagesAndAttributes(t *testing.T) {
 	}
 	if strings.Contains(got, `<img src="/chat/files/file_123"`) {
 		t.Fatalf("Render output = %q, did not expect raw HTML image to be trusted", got)
+	}
+}
+
+func TestRendererIgnoresArtifactDirectivesInsideFencedCode(t *testing.T) {
+	renderer := NewRenderer()
+
+	html, err := renderer.Render("```text\n:::artifact title=\"Nope\" type=\"text/markdown\"\n# Not an artifact\n:::\n```")
+	if err != nil {
+		t.Fatalf("Render error = %v", err)
+	}
+	got := string(html)
+	if strings.Contains(got, `message-artifact`) {
+		t.Fatalf("Render output = %q, did not expect artifact rendered from fenced code", got)
+	}
+	if !strings.Contains(got, `:::artifact`) || !strings.Contains(got, `# Not an artifact`) {
+		t.Fatalf("Render output = %q, want literal artifact directive in code", got)
+	}
+}
+
+func TestRendererRendersCodeArtifactContentAsLiteralCode(t *testing.T) {
+	renderer := NewRenderer()
+
+	html, err := renderer.Render(":::artifact title=\"Code\" type=\"application/vnd.code\"\nbefore\n```\n# Not markdown\n```\nafter\n:::\n")
+	if err != nil {
+		t.Fatalf("Render error = %v", err)
+	}
+	got := string(html)
+	if !strings.Contains(got, `class="message-artifact"`) || !strings.Contains(got, `<pre><code>`) {
+		t.Fatalf("Render output = %q, want code artifact", got)
+	}
+	if strings.Contains(got, `<h1>Not markdown</h1>`) {
+		t.Fatalf("Render output = %q, did not expect code artifact content parsed as markdown", got)
+	}
+	for _, want := range []string{"before", "```", "# Not markdown", "after"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Render output = %q, want literal code artifact content %q", got, want)
+		}
+	}
+}
+
+func TestRendererKeepsFootnoteIDsUniqueAcrossArtifacts(t *testing.T) {
+	renderer := NewRenderer()
+
+	html, err := renderer.Render(`Before[^1]
+
+[^1]: First source
+
+:::artifact title="Plain" type="text/plain"
+plain artifact
+:::
+
+After[^2]
+
+[^2]: Second source`)
+	if err != nil {
+		t.Fatalf("Render error = %v", err)
+	}
+	got := string(html)
+	idPattern := regexp.MustCompile(`id="(fn(?:ref)?:[^"]+)"`)
+	seen := map[string]bool{}
+	for _, match := range idPattern.FindAllStringSubmatch(got, -1) {
+		if seen[match[1]] {
+			t.Fatalf("Render output = %q, duplicate footnote id %q", got, match[1])
+		}
+		seen[match[1]] = true
+	}
+	if len(seen) < 4 {
+		t.Fatalf("Render output = %q, want footnote refs and backlinks around artifact", got)
 	}
 }
 

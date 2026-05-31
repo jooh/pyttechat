@@ -134,6 +134,53 @@
     return status;
   }
 
+  function createFinalStatus(statusData) {
+    const text = typeof statusData?.text === 'string' ? statusData.text : '';
+    if (!text) {
+      return null;
+    }
+    const kind = typeof statusData.kind === 'string' && statusData.kind ? statusData.kind : 'status';
+    const label = typeof statusData.label === 'string' && statusData.label ? statusData.label : kind;
+
+    const status = document.createElement('div');
+    status.className = 'message-status';
+    status.dataset.statusKind = kind;
+    status.dataset.statusState = 'complete';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'message-status-toggle';
+    toggle.type = 'button';
+    toggle.dataset.statusToggle = '';
+    toggle.textContent = label;
+    toggle.setAttribute('aria-expanded', 'false');
+
+    const content = document.createElement('div');
+    content.className = 'message-status-content';
+    content.id = typeof statusData.content_id === 'string' && statusData.content_id ? statusData.content_id : nextStatusContentID();
+    content.hidden = true;
+    content.textContent = text;
+
+    toggle.setAttribute('aria-controls', content.id);
+    status.append(toggle, content);
+    return status;
+  }
+
+  function replaceFinalStatuses(article, statuses) {
+    article.querySelectorAll('.message-status').forEach(function (status) {
+      status.remove();
+    });
+    if (!Array.isArray(statuses)) {
+      return;
+    }
+    const body = article.querySelector('.message-text');
+    statuses.forEach(function (statusData) {
+      const status = createFinalStatus(statusData);
+      if (status) {
+        article.insertBefore(status, body);
+      }
+    });
+  }
+
   function ensureThinkingStatus(article) {
     let status = article.querySelector('.message-status[data-status-kind="thinking"]');
     if (!status) {
@@ -604,7 +651,11 @@
         enhanceMessage(assistant.article);
       }
       setCompletedAt(assistant, data.completed_at);
-      completeThinkingStatus(assistant.article);
+      if (Array.isArray(data.statuses)) {
+        replaceFinalStatuses(assistant.article, data.statuses);
+      } else {
+        completeThinkingStatus(assistant.article);
+      }
       assistant.article.classList.remove('message-streaming');
       assistant.article.classList.add('message-complete');
       if (!assistantHasContent(assistant)) {

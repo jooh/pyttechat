@@ -164,13 +164,9 @@ func (s *TurnStream) mergeCompletedPart(part llm.Part) {
 	}
 
 	if part.Type == llm.PartText {
-		for i := len(s.assistantParts) - 1; i >= 0; i-- {
-			if s.assistantParts[i].Type != llm.PartText {
-				continue
-			}
-			if part.Text != "" {
-				s.assistantParts[i].Text = part.Text
-			}
+		lastIndex := len(s.assistantParts) - 1
+		if lastIndex >= 0 && s.assistantParts[lastIndex].Type == llm.PartText && part.Text != "" && strings.HasPrefix(part.Text, s.assistantParts[lastIndex].Text) {
+			s.assistantParts[lastIndex].Text = part.Text
 			return
 		}
 	}

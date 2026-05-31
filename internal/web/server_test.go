@@ -147,6 +147,7 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	for _, want := range []string{
 		`ensureThinkingStatus`,
 		`completeThinkingStatus`,
+		`replaceFinalStatuses`,
 		`enhanceMath`,
 		`enhanceMermaidBlocks`,
 		`data-mermaid-toggle`,
@@ -1061,9 +1062,10 @@ func TestTurnDoneRendersStructuredOutputParts(t *testing.T) {
 		{Type: llm.EventTextDelta, Delta: "# Answer"},
 		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartSummary, Text: "brief summary"}},
 		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartError, Text: "partial refusal"}},
+		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartText, Text: "Follow-up"}},
 		{Type: llm.EventOutputItemDone, Part: llm.Part{
 			Type:     llm.PartImage,
-			URL:      "/chat/files/image_1",
+			URL:      "/assets/app.css",
 			Filename: "plot.png",
 			Alt:      "Plot",
 			Width:    640,
@@ -1071,7 +1073,7 @@ func TestTurnDoneRendersStructuredOutputParts(t *testing.T) {
 		}},
 		{Type: llm.EventOutputItemDone, Part: llm.Part{
 			Type:     llm.PartAttachment,
-			URL:      "/chat/files/file_1",
+			URL:      "/assets/app.css",
 			Filename: "notes.txt",
 			MimeType: "text/plain",
 			Size:     12,
@@ -1097,8 +1099,9 @@ func TestTurnDoneRendersStructuredOutputParts(t *testing.T) {
 		`<h1>Answer</h1>`,
 		`class="message-part-error"`,
 		`partial refusal`,
+		`<p>Follow-up</p>`,
 		`class="message-image"`,
-		`src="/chat/files/image_1"`,
+		`src="/assets/app.css"`,
 		`class="message-attachment"`,
 		`notes.txt`,
 		`attachment preview`,
@@ -1106,6 +1109,39 @@ func TestTurnDoneRendersStructuredOutputParts(t *testing.T) {
 		if !strings.Contains(done.HTML, want) {
 			t.Fatalf("done HTML = %q, want structured output substring %q", done.HTML, want)
 		}
+	}
+	if strings.Index(done.HTML, `<h1>Answer</h1>`) > strings.Index(done.HTML, `<p>Follow-up</p>`) {
+		t.Fatalf("done HTML = %q, want initial text before later completed text part", done.HTML)
+	}
+	if len(done.Statuses) != 1 || done.Statuses[0].Kind != "summary" || done.Statuses[0].Text != "brief summary" {
+		t.Fatalf("done statuses = %#v, want summary status", done.Statuses)
+	}
+}
+
+func TestTurnDoneIncludesStatusesForSummaryOnlyOutput(t *testing.T) {
+	llmClient := webSequenceClient{events: []llm.Event{
+		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartSummary, Text: "brief summary"}},
+		{Type: llm.EventCompleted, ResponseID: "resp_done"},
+	}}
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	frames := parseSSE(t, body)
+	done := decodeDoneFrame(t, frames[len(frames)-1])
+	if done.HTML != "" {
+		t.Fatalf("done HTML = %q, want empty body for summary-only output", done.HTML)
+	}
+	if len(done.Statuses) != 1 || done.Statuses[0].Kind != "summary" || done.Statuses[0].Text != "brief summary" {
+		t.Fatalf("done statuses = %#v, want visible summary status", done.Statuses)
 	}
 }
 
@@ -1232,7 +1268,7 @@ func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 				{Type: llm.PartError, Text: "model refused"},
 				{
 					Type:     llm.PartImage,
-					URL:      "/chat/files/image_1",
+					URL:      "/assets/app.css",
 					Filename: "plot.png",
 					MimeType: "image/png",
 					Alt:      "Plot",
@@ -1241,7 +1277,7 @@ func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 				},
 				{
 					Type:     llm.PartAttachment,
-					URL:      "/chat/files/file_1",
+					URL:      "/assets/app.css",
 					Filename: "notes.txt",
 					MimeType: "text/plain",
 					Size:     42,
@@ -1269,7 +1305,7 @@ func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 		`class="message-part-error"`,
 		`model refused`,
 		`class="message-image"`,
-		`src="/chat/files/image_1"`,
+		`src="/assets/app.css"`,
 		`alt="Plot"`,
 		`class="message-attachment"`,
 		`notes.txt`,
@@ -1298,6 +1334,22 @@ func TestViewMessagesKeepsVisibleNonTextMessages(t *testing.T) {
 	}
 	if messages[1].Role != "user" || messages[1].Text != "visible" {
 		t.Fatalf("second viewMessage = %#v, want visible user message", messages[1])
+	}
+}
+
+func TestSafeBFFURLRejectsUnservedChatFileRoutes(t *testing.T) {
+	for _, raw := range []string{
+		"/chat/attachments/file_1",
+		"/chat/files/file_1",
+		"/chat/images/image_1",
+		"https://proxy.example/file_1",
+	} {
+		if got := safeBFFURL(raw); got != "" {
+			t.Fatalf("safeBFFURL(%q) = %q, want empty for unserved or external URL", raw, got)
+		}
+	}
+	if got := safeBFFURL("/assets/app.css"); got != "/assets/app.css" {
+		t.Fatalf("safeBFFURL(/assets/app.css) = %q, want asset URL", got)
 	}
 }
 
@@ -1656,12 +1708,13 @@ type testHTMLPayload struct {
 }
 
 type testDonePayload struct {
-	TurnID             string     `json:"turn_id"`
-	AssistantMessageID string     `json:"assistant_message_id"`
-	ResponseID         string     `json:"response_id"`
-	Usage              *llm.Usage `json:"usage,omitempty"`
-	HTML               string     `json:"html"`
-	CompletedAt        string     `json:"completed_at"`
+	TurnID             string       `json:"turn_id"`
+	AssistantMessageID string       `json:"assistant_message_id"`
+	ResponseID         string       `json:"response_id"`
+	Usage              *llm.Usage   `json:"usage,omitempty"`
+	HTML               string       `json:"html"`
+	Statuses           []viewStatus `json:"statuses,omitempty"`
+	CompletedAt        string       `json:"completed_at"`
 }
 
 func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {

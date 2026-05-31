@@ -5,6 +5,7 @@ import (
 	stdhtml "html"
 	"html/template"
 	"regexp"
+	"strconv"
 	"strings"
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -41,6 +42,7 @@ func (r *Renderer) Render(markdown string) (template.HTML, error) {
 		return "", err
 	}
 	out = decorateCitations(out)
+	out = r.sanitizer.Sanitize(out)
 	return template.HTML(out), nil
 }
 
@@ -81,22 +83,20 @@ func markdownPolicy() *bluemonday.Policy {
 	policy.AllowAttrs("href").Matching(regexp.MustCompile(`\A#[._:a-zA-Z0-9-]+\z`)).OnElements("a")
 	policy.AllowAttrs("id").Matching(regexp.MustCompile(`\A[._:a-zA-Z0-9-]+\z`)).OnElements("a", "sup", "li", "div", "section")
 	policy.AllowAttrs("role").Matching(regexp.MustCompile(`\Adoc-(?:noteref|backlink|endnotes)\z`)).OnElements("a", "div")
+	policy.AllowAttrs("data-citation").Matching(citationIDPattern).OnElements("span")
+	policy.AllowAttrs("data-artifact-type").Matching(regexp.MustCompile(`\A[-+./_a-zA-Z0-9]+\z`)).OnElements("section")
+	policy.AllowAttrs("title").Matching(citationIDPattern).OnElements("span")
 	policy.AllowAttrs("type").Matching(regexp.MustCompile(`\Acheckbox\z`)).OnElements("input")
 	policy.AllowAttrs("checked", "disabled").OnElements("input")
 	policy.AllowAttrs("class").Matching(regexp.MustCompile(`\A[-_a-zA-Z0-9 ]+\z`)).OnElements(
 		"a", "div", "figcaption", "figure", "header", "pre", "code", "section", "span", "sup", "sub",
 	)
-	policy.AllowAttrs("src").Matching(regexp.MustCompile(`\A/(?:assets/|chat/(?:attachments|files|images)/)[^<>"'\s]*\z`)).OnElements("img")
+	policy.AllowAttrs("src").Matching(regexp.MustCompile(`\A/assets/[^<>"'\s]*\z`)).OnElements("img")
 	policy.AllowAttrs("alt", "title").OnElements("img")
 	policy.AllowAttrs("width", "height").Matching(regexp.MustCompile(`\A[1-9][0-9]{0,4}\z`)).OnElements("img")
 	policy.AllowAttrs("loading").Matching(regexp.MustCompile(`\Alazy\z`)).OnElements("img")
 	policy.AllowAttrs("decoding").Matching(regexp.MustCompile(`\Aasync\z`)).OnElements("img")
 	return policy
-}
-
-type renderSegment struct {
-	markdown string
-	artifact *artifactBlock
 }
 
 type artifactBlock struct {
@@ -105,71 +105,174 @@ type artifactBlock struct {
 	Content string
 }
 
+type artifactPlaceholder struct {
+	marker   string
+	artifact *artifactBlock
+}
+
+type artifactExtraction struct {
+	markdown  string
+	artifacts []artifactPlaceholder
+}
+
 func (r *Renderer) renderWithArtifacts(markdown string) (string, error) {
-	segments := splitArtifactBlocks(markdown)
-	var out strings.Builder
-	for _, segment := range segments {
-		if segment.artifact != nil {
-			html, err := r.renderArtifact(*segment.artifact)
-			if err != nil {
-				return "", err
-			}
-			out.WriteString(html)
-			continue
-		}
-		if segment.markdown == "" {
-			continue
-		}
-		html, err := r.renderMarkdownSegment(segment.markdown)
+	extracted := extractArtifactBlocks(markdown)
+	html, err := r.renderMarkdownSegment(extracted.markdown)
+	if err != nil {
+		return "", err
+	}
+
+	out := string(html)
+	for _, placeholder := range extracted.artifacts {
+		artifactHTML, err := r.renderArtifact(*placeholder.artifact)
 		if err != nil {
 			return "", err
 		}
-		out.Write(html)
+		out = replaceArtifactPlaceholder(out, placeholder.marker, artifactHTML)
 	}
-	return out.String(), nil
+	return out, nil
 }
 
-func splitArtifactBlocks(input string) []renderSegment {
+func extractArtifactBlocks(input string) artifactExtraction {
 	lines := strings.SplitAfter(input, "\n")
 	if len(lines) == 1 && lines[0] == "" {
-		return nil
+		return artifactExtraction{}
 	}
 
-	var segments []renderSegment
-	var normal strings.Builder
+	var markdown strings.Builder
+	var artifacts []artifactPlaceholder
+	var fence fencedCodeBlock
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, ":::artifact") {
-			normal.WriteString(line)
+		if fence.open {
+			markdown.WriteString(line)
+			if closesFence(line, fence) {
+				fence.open = false
+			}
+			continue
+		}
+		if nextFence, ok := startsFence(line); ok {
+			fence = nextFence
+			markdown.WriteString(line)
+			continue
+		}
+		if !isArtifactOpener(line) {
+			markdown.WriteString(line)
 			continue
 		}
 
 		var content strings.Builder
 		end := -1
 		for j := i + 1; j < len(lines); j++ {
-			if strings.TrimSpace(lines[j]) == ":::" {
+			if isArtifactCloser(lines[j]) {
 				end = j
 				break
 			}
 			content.WriteString(lines[j])
 		}
 		if end < 0 {
-			normal.WriteString(line)
+			markdown.WriteString(line)
 			continue
 		}
 
-		if normal.Len() > 0 {
-			segments = append(segments, renderSegment{markdown: normal.String()})
-			normal.Reset()
-		}
-		segments = append(segments, renderSegment{artifact: parseArtifactBlock(trimmed, content.String())})
+		marker := artifactMarker(input, len(artifacts))
+		writeArtifactPlaceholder(&markdown, marker)
+		artifacts = append(artifacts, artifactPlaceholder{
+			marker:   marker,
+			artifact: parseArtifactBlock(strings.TrimSpace(line), content.String()),
+		})
 		i = end
 	}
-	if normal.Len() > 0 {
-		segments = append(segments, renderSegment{markdown: normal.String()})
+	return artifactExtraction{markdown: markdown.String(), artifacts: artifacts}
+}
+
+type fencedCodeBlock struct {
+	open   bool
+	marker byte
+	length int
+}
+
+func startsFence(line string) (fencedCodeBlock, bool) {
+	indent, rest := leadingSpaces(line)
+	if indent > 3 || len(rest) < 3 {
+		return fencedCodeBlock{}, false
 	}
-	return segments
+	marker := rest[0]
+	if marker != '`' && marker != '~' {
+		return fencedCodeBlock{}, false
+	}
+	length := 0
+	for length < len(rest) && rest[length] == marker {
+		length++
+	}
+	if length < 3 {
+		return fencedCodeBlock{}, false
+	}
+	return fencedCodeBlock{open: true, marker: marker, length: length}, true
+}
+
+func closesFence(line string, fence fencedCodeBlock) bool {
+	indent, rest := leadingSpaces(line)
+	if indent > 3 || len(rest) < fence.length || rest[0] != fence.marker {
+		return false
+	}
+	length := 0
+	for length < len(rest) && rest[length] == fence.marker {
+		length++
+	}
+	return length >= fence.length && strings.TrimSpace(rest[length:]) == ""
+}
+
+func isArtifactOpener(line string) bool {
+	indent, rest := leadingSpaces(line)
+	if indent > 3 {
+		return false
+	}
+	trimmed := strings.TrimSpace(rest)
+	return trimmed == ":::artifact" || strings.HasPrefix(trimmed, ":::artifact ")
+}
+
+func isArtifactCloser(line string) bool {
+	indent, rest := leadingSpaces(line)
+	return indent <= 3 && strings.TrimSpace(rest) == ":::"
+}
+
+func leadingSpaces(line string) (int, string) {
+	spaces := 0
+	for spaces < len(line) && line[spaces] == ' ' {
+		spaces++
+	}
+	return spaces, line[spaces:]
+}
+
+func artifactMarker(input string, index int) string {
+	marker := "PYTTECHAT_ARTIFACT_" + strconv.Itoa(index)
+	for suffix := 1; strings.Contains(input, marker); suffix++ {
+		marker = "PYTTECHAT_ARTIFACT_" + strconv.Itoa(index) + "_" + strconv.Itoa(suffix)
+	}
+	return marker
+}
+
+func writeArtifactPlaceholder(out *strings.Builder, marker string) {
+	if out.Len() > 0 {
+		current := out.String()
+		switch {
+		case strings.HasSuffix(current, "\n\n"):
+		case strings.HasSuffix(current, "\n"):
+			out.WriteByte('\n')
+		default:
+			out.WriteString("\n\n")
+		}
+	}
+	out.WriteString(marker)
+	out.WriteString("\n\n")
+}
+
+func replaceArtifactPlaceholder(input, marker, html string) string {
+	for _, target := range []string{"<p>" + marker + "</p>\n", "<p>" + marker + "</p>"} {
+		input = strings.ReplaceAll(input, target, html)
+	}
+	return strings.ReplaceAll(input, marker, html)
 }
 
 var artifactAttrPattern = regexp.MustCompile(`([A-Za-z][-_A-Za-z0-9]*)="([^"]*)"`)
@@ -203,11 +306,11 @@ func (r *Renderer) renderArtifact(artifact artifactBlock) (string, error) {
 	case "text/markdown", "text/md":
 		body, err = r.renderMarkdownSegment(artifact.Content)
 	case "application/vnd.mermaid":
-		body, err = r.renderMarkdownSegment("```mermaid\n" + artifact.Content + "\n```")
+		body = escapedCodeBlock(artifact.Content, "language-mermaid")
 	case "application/vnd.code":
-		body, err = r.renderMarkdownSegment("```\n" + artifact.Content + "\n```")
+		body = escapedCodeBlock(artifact.Content, "")
 	default:
-		body = []byte("<pre><code>" + stdhtml.EscapeString(artifact.Content) + "</code></pre>\n")
+		body = escapedCodeBlock(artifact.Content, "")
 	}
 	if err != nil {
 		return "", err
@@ -226,6 +329,20 @@ func (r *Renderer) renderArtifact(artifact artifactBlock) (string, error) {
 	out.Write(body)
 	out.WriteString(`</div></section>`)
 	return out.String(), nil
+}
+
+func escapedCodeBlock(content, className string) []byte {
+	var out strings.Builder
+	out.WriteString("<pre><code")
+	if className != "" {
+		out.WriteString(` class="`)
+		out.WriteString(stdhtml.EscapeString(className))
+		out.WriteString(`"`)
+	}
+	out.WriteString(">")
+	out.WriteString(stdhtml.EscapeString(content))
+	out.WriteString("</code></pre>\n")
+	return []byte(out.String())
 }
 
 var mathDelimiterReplacements = []struct {
@@ -264,6 +381,40 @@ func decorateCitations(input string) string {
 	if !strings.Contains(input, "【turn") {
 		return input
 	}
+	var out strings.Builder
+	skipDepth := 0
+	for offset := 0; offset < len(input); {
+		if input[offset] == '<' {
+			end := strings.IndexByte(input[offset:], '>')
+			if end < 0 {
+				out.WriteString(decorateCitationText(input[offset:]))
+				break
+			}
+			end += offset + 1
+			tag := input[offset:end]
+			updateCitationSkipDepth(tag, &skipDepth)
+			out.WriteString(tag)
+			offset = end
+			continue
+		}
+
+		nextTag := strings.IndexByte(input[offset:], '<')
+		end := len(input)
+		if nextTag >= 0 {
+			end = offset + nextTag
+		}
+		text := input[offset:end]
+		if skipDepth > 0 {
+			out.WriteString(text)
+		} else {
+			out.WriteString(decorateCitationText(text))
+		}
+		offset = end
+	}
+	return out.String()
+}
+
+func decorateCitationText(input string) string {
 	matches := citationMatches(input)
 	if len(matches) == 0 {
 		return input
@@ -282,6 +433,49 @@ func decorateCitations(input string) string {
 	}
 	out.WriteString(input[last:])
 	return out.String()
+}
+
+func updateCitationSkipDepth(tag string, skipDepth *int) {
+	name, closing, selfClosing := htmlTagName(tag)
+	if name != "pre" && name != "code" {
+		return
+	}
+	if closing {
+		if *skipDepth > 0 {
+			*skipDepth--
+		}
+		return
+	}
+	if !selfClosing {
+		*skipDepth++
+	}
+}
+
+func htmlTagName(tag string) (name string, closing bool, selfClosing bool) {
+	if len(tag) < 3 || tag[0] != '<' {
+		return "", false, false
+	}
+	i := 1
+	if tag[i] == '/' {
+		closing = true
+		i++
+	}
+	for i < len(tag) && (tag[i] == ' ' || tag[i] == '\t' || tag[i] == '\n' || tag[i] == '\r') {
+		i++
+	}
+	start := i
+	for i < len(tag) {
+		ch := tag[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' {
+			i++
+			continue
+		}
+		break
+	}
+	if start == i {
+		return "", closing, false
+	}
+	return strings.ToLower(tag[start:i]), closing, strings.HasSuffix(strings.TrimSpace(tag), "/>")
 }
 
 func citationMatches(text string) []citationMatch {

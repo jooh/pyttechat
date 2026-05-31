@@ -352,10 +352,10 @@ type viewMessage struct {
 }
 
 type viewStatus struct {
-	Kind      string
-	Label     string
-	Text      string
-	ContentID string
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Text      string `json:"text"`
+	ContentID string `json:"content_id,omitempty"`
 }
 
 func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
@@ -398,7 +398,7 @@ func assistantStatuses(parts []llm.Part, messageIndex int) []viewStatus {
 				Kind:      "thinking",
 				Label:     "thinking",
 				Text:      text,
-				ContentID: fmt.Sprintf("message-status-content-%d-%d", messageIndex, partIndex),
+				ContentID: statusContentID(messageIndex, partIndex),
 			})
 		case llm.PartSummary:
 			text := strings.TrimSpace(part.Text)
@@ -409,11 +409,18 @@ func assistantStatuses(parts []llm.Part, messageIndex int) []viewStatus {
 				Kind:      "summary",
 				Label:     "summary",
 				Text:      text,
-				ContentID: fmt.Sprintf("message-status-content-%d-%d", messageIndex, partIndex),
+				ContentID: statusContentID(messageIndex, partIndex),
 			})
 		}
 	}
 	return statuses
+}
+
+func statusContentID(messageIndex, partIndex int) string {
+	if messageIndex < 0 {
+		return ""
+	}
+	return fmt.Sprintf("message-status-content-%d-%d", messageIndex, partIndex)
 }
 
 func reasoningDisplayText(part llm.Part) string {
@@ -560,10 +567,8 @@ func safeBFFURL(raw string) string {
 	if value == "" || strings.ContainsAny(value, "\"'<> \t\r\n") {
 		return ""
 	}
-	for _, prefix := range []string{"/assets/", "/chat/attachments/", "/chat/files/", "/chat/images/"} {
-		if strings.HasPrefix(value, prefix) {
-			return value
-		}
+	if strings.HasPrefix(value, "/assets/") {
+		return value
 	}
 	return ""
 }
@@ -753,6 +758,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				ResponseID:         event.ResponseID,
 				Usage:              event.Usage,
 				HTML:               html,
+				Statuses:           assistantStatuses(assistantParts, -1),
 				CompletedAt:        timeNow().UTC().Format(time.RFC3339),
 			})
 			return
@@ -797,13 +803,9 @@ func mergeCompletedOutputPart(parts *[]llm.Part, part llm.Part) {
 			return
 		}
 	case llm.PartText:
-		for i := len(*parts) - 1; i >= 0; i-- {
-			if (*parts)[i].Type != llm.PartText {
-				continue
-			}
-			if part.Text != "" {
-				(*parts)[i].Text = part.Text
-			}
+		lastIndex := len(*parts) - 1
+		if lastIndex >= 0 && (*parts)[lastIndex].Type == llm.PartText && part.Text != "" && strings.HasPrefix(part.Text, (*parts)[lastIndex].Text) {
+			(*parts)[lastIndex].Text = part.Text
 			return
 		}
 	}
@@ -980,6 +982,7 @@ type doneEvent struct {
 	ResponseID         string        `json:"response_id"`
 	Usage              *llm.Usage    `json:"usage,omitempty"`
 	HTML               template.HTML `json:"html"`
+	Statuses           []viewStatus  `json:"statuses,omitempty"`
 	CompletedAt        string        `json:"completed_at"`
 }
 
