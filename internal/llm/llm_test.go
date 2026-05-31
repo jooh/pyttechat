@@ -7,8 +7,12 @@ func TestMessageTextConcatenatesOnlyTextParts(t *testing.T) {
 		Role: RoleAssistant,
 		Parts: []Part{
 			{Type: PartReasoning, Text: "thinking"},
+			{Type: PartSummary, Text: "summary"},
+			{Type: PartError, Text: "error"},
 			{Type: PartText, Text: "hel"},
 			{Type: PartText, Text: "lo"},
+			{Type: PartImage, URL: "/chat/files/image_1"},
+			{Type: PartAttachment, URL: "/chat/files/file_1"},
 		},
 	}
 
@@ -40,6 +44,16 @@ func TestCloneMessagesDeepCopiesPartsAndSummaries(t *testing.T) {
 					Summary:          []string{"summary"},
 					EncryptedContent: "encrypted",
 				},
+				{
+					Type:     PartImage,
+					URL:      "/chat/files/image_1",
+					Filename: "plot.png",
+					MimeType: "image/png",
+					Alt:      "Plot",
+					Width:    640,
+					Height:   480,
+					Size:     123,
+				},
 				{Type: PartText, Text: "answer"},
 			},
 		},
@@ -48,12 +62,13 @@ func TestCloneMessagesDeepCopiesPartsAndSummaries(t *testing.T) {
 	clone := CloneMessages(messages)
 	clone[0].Parts[0].Summary[0] = "changed"
 	clone[0].Parts[0].Text = "changed"
-	clone[0].Parts[1].Text = "changed"
+	clone[0].Parts[1].URL = "/changed"
+	clone[0].Parts[2].Text = "changed"
 
 	if messages[0].Parts[0].Summary[0] != "summary" {
 		t.Fatalf("original summary changed to %q", messages[0].Parts[0].Summary[0])
 	}
-	if messages[0].Parts[0].Text != "thinking" || messages[0].Parts[1].Text != "answer" {
+	if messages[0].Parts[0].Text != "thinking" || messages[0].Parts[1].URL != "/chat/files/image_1" || messages[0].Parts[2].Text != "answer" {
 		t.Fatalf("original parts changed: %#v", messages[0].Parts)
 	}
 }

@@ -154,6 +154,62 @@ button {
   margin-bottom: 0;
 }
 
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.2rem 0 0.55rem;
+  line-height: 1.2;
+}
+
+.markdown-body h1 {
+  font-size: 1.45rem;
+}
+
+.markdown-body h2 {
+  font-size: 1.25rem;
+}
+
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 1.05rem;
+}
+
+.markdown-body hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+}
+
+.markdown-body .footnotes {
+  margin-top: 1rem;
+  color: var(--pico-muted-color);
+  font-size: 0.875rem;
+}
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35em;
+  padding: 0 0.35em;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: 999px;
+  color: var(--pico-muted-color);
+  font-size: 0.78em;
+  font-weight: 600;
+  vertical-align: 0.08em;
+}
+
 .markdown-body table {
   display: block;
   max-width: 100%;
@@ -314,6 +370,120 @@ button {
 
 .code-block pre {
   border-radius: 0;
+}
+
+.code-block-mermaid .mermaid-render {
+  padding: 1rem;
+  overflow-x: auto;
+  background: var(--pico-background-color);
+  text-align: center;
+}
+
+.code-block-mermaid .mermaid-render svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.code-block-mermaid[data-source-visible="false"] pre {
+  display: none;
+}
+
+.code-block-mermaid[data-source-visible="true"] .mermaid-render {
+  display: none;
+}
+
+.message-part-error {
+  margin-block: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border: var(--pico-border-width) solid var(--pico-del-color);
+  border-radius: 0.5rem;
+  color: var(--pico-del-color);
+  background: color-mix(in srgb, var(--pico-del-color) 7%, transparent);
+  font-weight: 600;
+}
+
+.message-image {
+  max-width: min(42rem, 100%);
+  margin: 0.85rem 0;
+}
+
+.message-image img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+
+.message-image figcaption {
+  margin-top: 0.35rem;
+  color: var(--pico-muted-color);
+  font-size: 0.8rem;
+}
+
+.message-attachment-block {
+  margin-block: 0.75rem;
+}
+
+.message-attachment {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: 0.5rem;
+  text-decoration: none;
+}
+
+.message-attachment-name {
+  overflow: hidden;
+  color: var(--pico-color);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-attachment-meta {
+  color: var(--pico-muted-color);
+  font-size: 0.78rem;
+}
+
+.message-attachment-preview {
+  margin-top: 0.5rem;
+}
+
+.message-artifact {
+  margin-block: 0.85rem;
+  overflow: hidden;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: 0.5rem;
+}
+
+.message-artifact-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+.message-artifact-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-artifact-type {
+  flex: 0 0 auto;
+  color: var(--pico-muted-color);
+  font-size: 0.75rem;
+}
+
+.message-artifact-body {
+  padding: 0.75rem;
 }
 
 @media (prefers-color-scheme: dark) {

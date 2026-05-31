@@ -20,6 +20,8 @@
   let abortRequested = false;
   let creatingTurn = false;
   let statusIDCounter = 0;
+  let mermaidInitialized = false;
+  let mermaidIDCounter = 0;
 
   function csrfHeaderName() {
     return 'X-CSRF-Token';
@@ -322,10 +324,118 @@
     });
   }
 
+  function enhanceMath(root) {
+    if (typeof window.renderMathInElement !== 'function') {
+      return;
+    }
+    window.renderMathInElement(root, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '\\(', right: '\\)', display: false },
+      ],
+      ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+      throwOnError: false,
+    });
+  }
+
+  function ensureMermaidInitialized() {
+    if (mermaidInitialized || !window.mermaid) {
+      return;
+    }
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+    });
+    mermaidInitialized = true;
+  }
+
+  function enhanceMermaidBlocks(root) {
+    root.querySelectorAll('.code-block').forEach(function (block) {
+      if (block.dataset.mermaidEnhanced === 'true') {
+        return;
+      }
+      const code = block.querySelector('code');
+      if (languageFromCode(code).toLowerCase() !== 'mermaid') {
+        return;
+      }
+
+      block.dataset.mermaidEnhanced = 'true';
+      block.dataset.sourceVisible = 'false';
+      block.classList.add('code-block-mermaid');
+
+      const header = block.querySelector('.code-block-header');
+      if (header) {
+        const toggle = document.createElement('button');
+        toggle.className = 'copy-code mermaid-toggle';
+        toggle.type = 'button';
+        toggle.dataset.mermaidToggle = '';
+        toggle.textContent = 'Source';
+        toggle.setAttribute('aria-label', 'Show Mermaid source');
+
+        const retry = document.createElement('button');
+        retry.className = 'copy-code mermaid-retry';
+        retry.type = 'button';
+        retry.dataset.mermaidRetry = '';
+        retry.textContent = 'Retry';
+        retry.setAttribute('aria-label', 'Retry Mermaid render');
+
+        header.append(toggle, retry);
+      }
+
+      const diagram = document.createElement('div');
+      diagram.className = 'mermaid-render';
+      diagram.setAttribute('aria-live', 'polite');
+      block.insertBefore(diagram, block.querySelector('pre'));
+      renderMermaidBlock(block);
+    });
+  }
+
+  async function renderMermaidBlock(block) {
+    const code = block.querySelector('code');
+    const diagram = block.querySelector('.mermaid-render');
+    if (!code || !diagram) {
+      return;
+    }
+    if (!window.mermaid) {
+      diagram.textContent = 'Mermaid renderer unavailable.';
+      block.dataset.mermaidState = 'unavailable';
+      return;
+    }
+
+    ensureMermaidInitialized();
+    const source = code.textContent || '';
+    const id = `mermaid-${++mermaidIDCounter}`;
+    diagram.textContent = 'Rendering diagram...';
+    block.dataset.mermaidState = 'rendering';
+    try {
+      const result = await window.mermaid.render(id, source);
+      diagram.innerHTML = result.svg || '';
+      block.dataset.mermaidState = 'rendered';
+    } catch (error) {
+      diagram.textContent = 'Mermaid diagram could not be rendered.';
+      block.dataset.mermaidState = 'error';
+    }
+  }
+
+  function toggleMermaidSource(button) {
+    const block = button.closest('.code-block-mermaid');
+    if (!block) {
+      return;
+    }
+    const showSource = block.dataset.sourceVisible !== 'true';
+    block.dataset.sourceVisible = String(showSource);
+    button.textContent = showSource ? 'Diagram' : 'Source';
+    button.setAttribute('aria-label', showSource ? 'Show Mermaid diagram' : 'Show Mermaid source');
+  }
+
   function enhanceMessage(article) {
     const body = article.querySelector('.markdown-body');
     if (body) {
       enhanceCodeBlocks(body);
+      enhanceMermaidBlocks(body);
+      enhanceMath(body);
     }
   }
 
@@ -646,6 +756,21 @@
     const statusToggle = event.target.closest('[data-status-toggle]');
     if (statusToggle) {
       toggleStatusContent(statusToggle);
+      return;
+    }
+
+    const mermaidToggle = event.target.closest('[data-mermaid-toggle]');
+    if (mermaidToggle) {
+      toggleMermaidSource(mermaidToggle);
+      return;
+    }
+
+    const mermaidRetry = event.target.closest('[data-mermaid-retry]');
+    if (mermaidRetry) {
+      const block = mermaidRetry.closest('.code-block-mermaid');
+      if (block) {
+        renderMermaidBlock(block);
+      }
       return;
     }
 

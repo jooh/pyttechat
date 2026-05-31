@@ -7,7 +7,11 @@
     <meta name="csrf-token" content="{{.CSRFToken}}">
     <title>Pyttechat</title>
     <link rel="stylesheet" href="/assets/vendor/pico.min.css">
+    <link rel="stylesheet" href="/assets/vendor/katex/katex.min.css">
     <link rel="stylesheet" href="/assets/app.css">
+    <script defer src="/assets/vendor/katex/katex.min.js"></script>
+    <script defer src="/assets/vendor/katex/auto-render.min.js"></script>
+    <script defer src="/assets/vendor/mermaid.min.js"></script>
     <script defer src="/assets/app.js"></script>
   </head>
   <body>
@@ -27,7 +31,15 @@
         <div id="messages" class="messages" aria-live="polite">
           {{range .Messages}}
             <article class="message message-{{.Role}}">
-              {{if .HTML}}
+              {{range .Statuses}}
+                <div class="message-status" data-status-kind="{{.Kind}}" data-status-state="complete">
+                  <button class="message-status-toggle" type="button" data-status-toggle aria-expanded="false" aria-controls="{{.ContentID}}">{{.Label}}</button>
+                  <div id="{{.ContentID}}" class="message-status-content" hidden>{{.Text}}</div>
+                </div>
+              {{end}}
+              {{if eq .Role "assistant"}}
+                <div class="message-text markdown-body">{{.HTML}}</div>
+              {{else if .HTML}}
                 <div class="message-text markdown-body">{{.HTML}}</div>
               {{else}}
                 <div class="message-text message-plain">{{.Text}}</div>

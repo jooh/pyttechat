@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"html/template"
 	"io"
 	"io/fs"
@@ -28,7 +29,7 @@ const (
 	csrfHeaderName    = "X-CSRF-Token"
 )
 
-//go:embed assets/* assets/vendor/* templates/*
+//go:embed assets/* assets/vendor/* assets/vendor/katex/* assets/vendor/katex/fonts/* templates/*
 var embeddedFiles embed.FS
 
 var randomReader io.Reader = rand.Reader
@@ -343,35 +344,228 @@ type pageData struct {
 }
 
 type viewMessage struct {
-	Role  string
-	Label string
-	Text  string
-	HTML  template.HTML
+	Role     string
+	Label    string
+	Text     string
+	HTML     template.HTML
+	Statuses []viewStatus
+}
+
+type viewStatus struct {
+	Kind      string
+	Label     string
+	Text      string
+	ContentID string
 }
 
 func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
 	out := make([]viewMessage, 0, len(messages))
-	for _, message := range messages {
+	for messageIndex, message := range messages {
 		text := message.Text()
-		if text == "" {
-			continue
-		}
 		view := viewMessage{
 			Role:  string(message.Role),
 			Label: messageRoleLabel(message.Role),
 			Text:  text,
 		}
 		if message.Role == llm.RoleAssistant {
-			html, err := renderer.Render(text)
+			statuses := assistantStatuses(message.Parts, messageIndex)
+			html, err := renderAssistantBody(message.Parts, renderer)
 			if err != nil {
 				log.Printf("markdown render failed for stored assistant message: %v", err)
 				html = escapedPlainTextHTML(text)
 			}
 			view.HTML = html
+			view.Statuses = statuses
+		}
+		if view.Text == "" && view.HTML == "" && len(view.Statuses) == 0 {
+			continue
 		}
 		out = append(out, view)
 	}
 	return out
+}
+
+func assistantStatuses(parts []llm.Part, messageIndex int) []viewStatus {
+	var statuses []viewStatus
+	for partIndex, part := range parts {
+		switch part.Type {
+		case llm.PartReasoning:
+			text := reasoningDisplayText(part)
+			if text == "" {
+				continue
+			}
+			statuses = append(statuses, viewStatus{
+				Kind:      "thinking",
+				Label:     "thinking",
+				Text:      text,
+				ContentID: fmt.Sprintf("message-status-content-%d-%d", messageIndex, partIndex),
+			})
+		case llm.PartSummary:
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				continue
+			}
+			statuses = append(statuses, viewStatus{
+				Kind:      "summary",
+				Label:     "summary",
+				Text:      text,
+				ContentID: fmt.Sprintf("message-status-content-%d-%d", messageIndex, partIndex),
+			})
+		}
+	}
+	return statuses
+}
+
+func reasoningDisplayText(part llm.Part) string {
+	if text := strings.TrimSpace(part.Text); text != "" {
+		return text
+	}
+	return strings.TrimSpace(strings.Join(part.Summary, "\n"))
+}
+
+func renderAssistantBody(parts []llm.Part, renderer *markdown.Renderer) (template.HTML, error) {
+	var out strings.Builder
+	for _, part := range parts {
+		switch part.Type {
+		case llm.PartText:
+			if strings.TrimSpace(part.Text) == "" {
+				continue
+			}
+			html, err := renderer.Render(part.Text)
+			if err != nil {
+				return "", err
+			}
+			out.WriteString(string(html))
+		case llm.PartError:
+			out.WriteString(renderErrorPart(part))
+		case llm.PartImage:
+			out.WriteString(renderImagePart(part))
+		case llm.PartAttachment:
+			out.WriteString(renderAttachmentPart(part))
+		}
+	}
+	return template.HTML(out.String()), nil
+}
+
+func renderErrorPart(part llm.Part) string {
+	text := strings.TrimSpace(part.Text)
+	if text == "" {
+		return ""
+	}
+	return `<div class="message-part-error" role="alert">` + stdhtml.EscapeString(text) + `</div>`
+}
+
+func renderImagePart(part llm.Part) string {
+	src := safeBFFURL(part.URL)
+	if src == "" {
+		return ""
+	}
+	alt := strings.TrimSpace(part.Alt)
+	if alt == "" {
+		alt = strings.TrimSpace(part.Filename)
+	}
+
+	var out strings.Builder
+	out.WriteString(`<figure class="message-image"><a href="`)
+	out.WriteString(stdhtml.EscapeString(src))
+	out.WriteString(`" target="_blank" rel="noopener noreferrer"><img src="`)
+	out.WriteString(stdhtml.EscapeString(src))
+	out.WriteString(`" alt="`)
+	out.WriteString(stdhtml.EscapeString(alt))
+	out.WriteString(`" loading="lazy" decoding="async"`)
+	if part.Width > 0 {
+		out.WriteString(` width="`)
+		out.WriteString(strconv.Itoa(part.Width))
+		out.WriteString(`"`)
+	}
+	if part.Height > 0 {
+		out.WriteString(` height="`)
+		out.WriteString(strconv.Itoa(part.Height))
+		out.WriteString(`"`)
+	}
+	out.WriteString(`></a>`)
+	if caption := strings.TrimSpace(part.Filename); caption != "" {
+		out.WriteString(`<figcaption>`)
+		out.WriteString(stdhtml.EscapeString(caption))
+		out.WriteString(`</figcaption>`)
+	}
+	out.WriteString(`</figure>`)
+	return out.String()
+}
+
+func renderAttachmentPart(part llm.Part) string {
+	href := safeBFFURL(part.URL)
+	name := strings.TrimSpace(part.Filename)
+	if name == "" {
+		name = "attachment"
+	}
+
+	var out strings.Builder
+	out.WriteString(`<div class="message-attachment-block">`)
+	if href != "" {
+		out.WriteString(`<a class="message-attachment" href="`)
+		out.WriteString(stdhtml.EscapeString(href))
+		out.WriteString(`">`)
+	} else {
+		out.WriteString(`<span class="message-attachment">`)
+	}
+	out.WriteString(`<span class="message-attachment-name">`)
+	out.WriteString(stdhtml.EscapeString(name))
+	out.WriteString(`</span>`)
+	if meta := attachmentMeta(part); meta != "" {
+		out.WriteString(`<span class="message-attachment-meta">`)
+		out.WriteString(stdhtml.EscapeString(meta))
+		out.WriteString(`</span>`)
+	}
+	if href != "" {
+		out.WriteString(`</a>`)
+	} else {
+		out.WriteString(`</span>`)
+	}
+	if preview := strings.TrimSpace(part.Text); preview != "" {
+		out.WriteString(`<pre class="message-attachment-preview"><code>`)
+		out.WriteString(stdhtml.EscapeString(preview))
+		out.WriteString(`</code></pre>`)
+	}
+	out.WriteString(`</div>`)
+	return out.String()
+}
+
+func attachmentMeta(part llm.Part) string {
+	var fields []string
+	if mimeType := strings.TrimSpace(part.MimeType); mimeType != "" {
+		fields = append(fields, mimeType)
+	}
+	if size := formatByteSize(part.Size); size != "" {
+		fields = append(fields, size)
+	}
+	return strings.Join(fields, " - ")
+}
+
+func formatByteSize(size int64) string {
+	switch {
+	case size <= 0:
+		return ""
+	case size < 1024:
+		return fmt.Sprintf("%d B", size)
+	case size < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
+}
+
+func safeBFFURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" || strings.ContainsAny(value, "\"'<> \t\r\n") {
+		return ""
+	}
+	for _, prefix := range []string{"/assets/", "/chat/attachments/", "/chat/files/", "/chat/images/"} {
+		if strings.HasPrefix(value, prefix) {
+			return value
+		}
+	}
+	return ""
 }
 
 func messageRoleLabel(role llm.Role) string {
@@ -506,6 +700,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 
 	renderer := markdown.NewRenderer()
 	var fullMarkdown strings.Builder
+	var assistantParts []llm.Part
 	completed := false
 	for {
 		event, err := stream.Next()
@@ -526,6 +721,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				continue
 			}
 			fullMarkdown.WriteString(event.Delta)
+			appendOutputDelta(&assistantParts, llm.PartText, event.Delta)
 			html, err := renderer.Render(fullMarkdown.String())
 			if err != nil {
 				log.Printf("markdown preview render failed for turn %s: %v", j.id, err)
@@ -537,13 +733,16 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				HTML:               html,
 			})
 		case llm.EventReasoningDelta:
+			appendOutputDelta(&assistantParts, llm.PartReasoning, event.Delta)
 			j.emit("reasoning", deltaEvent{
 				TurnID:             j.id,
 				AssistantMessageID: j.assistantMessageID,
 				Delta:              event.Delta,
 			})
+		case llm.EventOutputItemDone:
+			mergeCompletedOutputPart(&assistantParts, event.Part)
 		case llm.EventCompleted:
-			html, err := renderer.Render(fullMarkdown.String())
+			html, err := renderAssistantBody(assistantParts, renderer)
 			if err != nil {
 				log.Printf("markdown final render failed for turn %s: %v", j.id, err)
 				html = escapedPlainTextHTML(fullMarkdown.String())
@@ -559,6 +758,56 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 			return
 		}
 	}
+}
+
+func appendOutputDelta(parts *[]llm.Part, partType llm.PartType, delta string) {
+	if delta == "" {
+		return
+	}
+	lastIndex := len(*parts) - 1
+	if lastIndex >= 0 && (*parts)[lastIndex].Type == partType {
+		(*parts)[lastIndex].Text += delta
+		return
+	}
+	*parts = append(*parts, llm.Part{Type: partType, Text: delta})
+}
+
+func mergeCompletedOutputPart(parts *[]llm.Part, part llm.Part) {
+	if part.Type == "" {
+		return
+	}
+	switch part.Type {
+	case llm.PartReasoning:
+		for i := len(*parts) - 1; i >= 0; i-- {
+			if (*parts)[i].Type != llm.PartReasoning {
+				continue
+			}
+			if part.Text != "" {
+				(*parts)[i].Text = part.Text
+			}
+			if part.ID != "" {
+				(*parts)[i].ID = part.ID
+			}
+			if len(part.Summary) > 0 {
+				(*parts)[i].Summary = append([]string(nil), part.Summary...)
+			}
+			if part.EncryptedContent != "" {
+				(*parts)[i].EncryptedContent = part.EncryptedContent
+			}
+			return
+		}
+	case llm.PartText:
+		for i := len(*parts) - 1; i >= 0; i-- {
+			if (*parts)[i].Type != llm.PartText {
+				continue
+			}
+			if part.Text != "" {
+				(*parts)[i].Text = part.Text
+			}
+			return
+		}
+	}
+	*parts = append(*parts, part.Clone())
 }
 
 func escapedPlainTextHTML(text string) template.HTML {

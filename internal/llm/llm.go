@@ -13,8 +13,12 @@ const (
 type PartType string
 
 const (
-	PartText      PartType = "text"
-	PartReasoning PartType = "reasoning"
+	PartText       PartType = "text"
+	PartReasoning  PartType = "reasoning"
+	PartSummary    PartType = "summary"
+	PartError      PartType = "error"
+	PartImage      PartType = "image"
+	PartAttachment PartType = "attachment"
 )
 
 type Part struct {
@@ -23,6 +27,13 @@ type Part struct {
 	ID               string
 	Summary          []string
 	EncryptedContent string
+	URL              string
+	Filename         string
+	MimeType         string
+	Alt              string
+	Width            int
+	Height           int
+	Size             int64
 }
 
 func (p Part) Clone() Part {

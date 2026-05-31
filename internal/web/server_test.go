@@ -44,6 +44,19 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	if !strings.Contains(body, `<link rel="stylesheet" href="/assets/vendor/pico.min.css">`) {
 		t.Fatalf("GET / body does not load vendored Pico CSS: %q", body)
 	}
+	if !strings.Contains(body, `<link rel="stylesheet" href="/assets/vendor/katex/katex.min.css">`) {
+		t.Fatalf("GET / body does not load vendored KaTeX CSS: %q", body)
+	}
+	for _, want := range []string{
+		`<script defer src="/assets/vendor/katex/katex.min.js"></script>`,
+		`<script defer src="/assets/vendor/katex/auto-render.min.js"></script>`,
+		`<script defer src="/assets/vendor/mermaid.min.js"></script>`,
+		`<script defer src="/assets/app.js"></script>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET / body = %q, want static renderer asset %q", body, want)
+		}
+	}
 	if !strings.Contains(body, "Pyttechat") {
 		t.Fatalf("GET / body = %q, want app shell", body)
 	}
@@ -134,6 +147,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	for _, want := range []string{
 		`ensureThinkingStatus`,
 		`completeThinkingStatus`,
+		`enhanceMath`,
+		`enhanceMermaidBlocks`,
+		`data-mermaid-toggle`,
 		`aria-expanded`,
 		`thinking...`,
 		`const nearBottomThreshold = 32;`,
@@ -158,6 +174,24 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	}
 	if !strings.Contains(body, "Pico CSS") {
 		t.Fatalf("vendored Pico asset body = %q, want Pico CSS", body)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/vendor/katex/katex.min.css")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET vendored KaTeX CSS status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, "KaTeX") {
+		t.Fatalf("vendored KaTeX CSS body = %q, want KaTeX asset", body)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/vendor/mermaid.min.js")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET vendored Mermaid JS status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, "mermaid") {
+		t.Fatalf("vendored Mermaid JS body = %q, want Mermaid asset", body)
 	}
 
 	response, body = get(t, client, server.URL+"/missing")
@@ -1022,6 +1056,59 @@ func TestTurnStreamingSanitizesUnsafeModelHTML(t *testing.T) {
 	}
 }
 
+func TestTurnDoneRendersStructuredOutputParts(t *testing.T) {
+	llmClient := webSequenceClient{events: []llm.Event{
+		{Type: llm.EventTextDelta, Delta: "# Answer"},
+		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartSummary, Text: "brief summary"}},
+		{Type: llm.EventOutputItemDone, Part: llm.Part{Type: llm.PartError, Text: "partial refusal"}},
+		{Type: llm.EventOutputItemDone, Part: llm.Part{
+			Type:     llm.PartImage,
+			URL:      "/chat/files/image_1",
+			Filename: "plot.png",
+			Alt:      "Plot",
+			Width:    640,
+			Height:   480,
+		}},
+		{Type: llm.EventOutputItemDone, Part: llm.Part{
+			Type:     llm.PartAttachment,
+			URL:      "/chat/files/file_1",
+			Filename: "notes.txt",
+			MimeType: "text/plain",
+			Size:     12,
+			Text:     "attachment preview",
+		}},
+		{Type: llm.EventCompleted, ResponseID: "resp_done"},
+	}}
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	frames := parseSSE(t, body)
+	done := decodeDoneFrame(t, frames[len(frames)-1])
+	for _, want := range []string{
+		`<h1>Answer</h1>`,
+		`class="message-part-error"`,
+		`partial refusal`,
+		`class="message-image"`,
+		`src="/chat/files/image_1"`,
+		`class="message-attachment"`,
+		`notes.txt`,
+		`attachment preview`,
+	} {
+		if !strings.Contains(done.HTML, want) {
+			t.Fatalf("done HTML = %q, want structured output substring %q", done.HTML, want)
+		}
+	}
+}
+
 func TestTurnRoutesReturnNotFound(t *testing.T) {
 	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
 	defer server.Close()
@@ -1134,14 +1221,83 @@ func TestTurnEventsStopsOnReplayAndUpdateWriteErrors(t *testing.T) {
 	})
 }
 
-func TestViewMessagesSkipsNonTextMessages(t *testing.T) {
+func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 	messages := viewMessages([]llm.Message{
-		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "hidden"}}},
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartReasoning, Text: "thinking"},
+				{Type: llm.PartSummary, Text: "short summary"},
+				{Type: llm.PartText, Text: "**answer**"},
+				{Type: llm.PartError, Text: "model refused"},
+				{
+					Type:     llm.PartImage,
+					URL:      "/chat/files/image_1",
+					Filename: "plot.png",
+					MimeType: "image/png",
+					Alt:      "Plot",
+					Width:    640,
+					Height:   480,
+				},
+				{
+					Type:     llm.PartAttachment,
+					URL:      "/chat/files/file_1",
+					Filename: "notes.txt",
+					MimeType: "text/plain",
+					Size:     42,
+					Text:     "preview text",
+				},
+			},
+		},
+	}, NewServer(Options{Client: dummy.NewClient()}).markdown)
+
+	if len(messages) != 1 || messages[0].Role != "assistant" {
+		t.Fatalf("viewMessages = %#v, want visible assistant message", messages)
+	}
+	if len(messages[0].Statuses) != 2 {
+		t.Fatalf("viewMessage statuses = %#v, want reasoning and summary statuses", messages[0].Statuses)
+	}
+	if messages[0].Statuses[0].Kind != "thinking" || !strings.Contains(messages[0].Statuses[0].Text, "thinking") {
+		t.Fatalf("reasoning status = %#v, want thinking content", messages[0].Statuses[0])
+	}
+	if messages[0].Statuses[1].Kind != "summary" || !strings.Contains(messages[0].Statuses[1].Text, "short summary") {
+		t.Fatalf("summary status = %#v, want summary content", messages[0].Statuses[1])
+	}
+	html := string(messages[0].HTML)
+	for _, want := range []string{
+		`<strong>answer</strong>`,
+		`class="message-part-error"`,
+		`model refused`,
+		`class="message-image"`,
+		`src="/chat/files/image_1"`,
+		`alt="Plot"`,
+		`class="message-attachment"`,
+		`notes.txt`,
+		`preview text`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("viewMessage HTML = %q, want structured part substring %q", html, want)
+		}
+	}
+	if strings.Contains(html, `https://proxy.example`) {
+		t.Fatalf("viewMessage HTML = %q, did not expect direct proxy URL", html)
+	}
+}
+
+func TestViewMessagesKeepsVisibleNonTextMessages(t *testing.T) {
+	messages := viewMessages([]llm.Message{
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "visible thinking"}}},
 		llm.NewTextMessage(llm.RoleUser, "visible"),
 	}, NewServer(Options{Client: dummy.NewClient()}).markdown)
 
-	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Text != "visible" {
-		t.Fatalf("viewMessages = %#v, want only visible text message", messages)
+	if len(messages) != 2 {
+		t.Fatalf("viewMessages = %#v, want reasoning-only assistant and user messages", messages)
+	}
+	if messages[0].Role != "assistant" || len(messages[0].Statuses) != 1 || messages[0].Statuses[0].Text != "visible thinking" {
+		t.Fatalf("first viewMessage = %#v, want visible reasoning-only assistant", messages[0])
+	}
+	if messages[1].Role != "user" || messages[1].Text != "visible" {
+		t.Fatalf("second viewMessage = %#v, want visible user message", messages[1])
 	}
 }
 
