@@ -106,6 +106,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`status-sweep`,
 		`@keyframes status-sweep`,
 		`.message-status`,
+		`animation: status-sweep 2.2s`,
+		`--status-sweep-low: rgb(32 32 32);`,
+		`min-height: 2.1rem;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app CSS = %q, want streaming UI style %q", body, want)
@@ -133,6 +136,7 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`completeThinkingStatus`,
 		`aria-expanded`,
 		`thinking...`,
+		`const nearBottomThreshold = 32;`,
 		`const wasNearBottom = isNearBottom();`,
 		`scrollToBottom(false, wasNearBottom);`,
 	} {

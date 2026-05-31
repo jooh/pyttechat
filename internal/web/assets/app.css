@@ -464,10 +464,10 @@ button {
 }
 
 .status-sweep {
-  --status-sweep-base: var(--pico-color);
-  --status-sweep-edge: color-mix(in srgb, var(--pico-color) 72%, var(--pico-background-color));
-  --status-sweep-mid: color-mix(in srgb, var(--pico-color) 50%, var(--pico-background-color));
-  --status-sweep-low: color-mix(in srgb, var(--pico-color) 25%, var(--pico-background-color));
+  --status-sweep-base: rgb(80 80 80);
+  --status-sweep-edge: rgb(136 136 136);
+  --status-sweep-mid: rgb(192 192 192);
+  --status-sweep-low: rgb(248 248 248);
   display: inline-block;
   background-image: linear-gradient(
     90deg,
@@ -486,7 +486,7 @@ button {
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: status-sweep 1.05s linear infinite;
+  animation: status-sweep 2.2s ease-in-out infinite;
 }
 
 @keyframes status-sweep {
@@ -496,6 +496,15 @@ button {
 
   to {
     background-position: -125% 0;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .status-sweep {
+    --status-sweep-base: rgb(205 205 205);
+    --status-sweep-edge: rgb(132 132 132);
+    --status-sweep-mid: rgb(76 76 76);
+    --status-sweep-low: rgb(32 32 32);
   }
 }
 
@@ -646,13 +655,14 @@ button {
 
 .composer textarea {
   max-height: 35vh;
-  min-height: 2.6rem;
+  min-height: 2.1rem;
   margin: 0;
-  padding: 0.65rem 0.75rem;
+  padding: 0.4rem 0.65rem;
   resize: none;
   border: 0;
   background: transparent;
   box-shadow: none;
+  line-height: 1.3;
   overflow-y: hidden;
 }
 

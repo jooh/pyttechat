@@ -10,6 +10,7 @@
   const composerStatus = document.getElementById('composer-status');
 
   const copyIcon = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 7h10v13H8z"></path><path d="M6 17H4V3h12v2"></path></svg>';
+  const nearBottomThreshold = 32;
 
   let currentTurn = null;
   let currentUser = null;
@@ -31,7 +32,7 @@
   }
 
   function isNearBottom() {
-    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 96;
+    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < nearBottomThreshold;
   }
 
   function updateScrollButton() {
