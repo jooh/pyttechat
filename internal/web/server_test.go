@@ -41,6 +41,19 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	if !strings.Contains(body, `<meta name="color-scheme" content="light dark">`) {
 		t.Fatalf("GET / body does not contain color scheme meta tag: %q", body)
 	}
+	themeScript := `<script src="/assets/theme-init.js"></script>`
+	firstStylesheet := `<link rel="stylesheet" href="/assets/vendor/pico.min.css">`
+	themeScriptIndex := strings.Index(body, themeScript)
+	stylesheetIndex := strings.Index(body, firstStylesheet)
+	if themeScriptIndex < 0 {
+		t.Fatalf("GET / body does not load early theme init script: %q", body)
+	}
+	if stylesheetIndex < 0 {
+		t.Fatalf("GET / body does not load vendored Pico CSS: %q", body)
+	}
+	if themeScriptIndex > stylesheetIndex {
+		t.Fatalf("GET / body loads theme init script after stylesheet: %q", body)
+	}
 	if !strings.Contains(body, `<link rel="stylesheet" href="/assets/vendor/pico.min.css">`) {
 		t.Fatalf("GET / body does not load vendored Pico CSS: %q", body)
 	}
@@ -68,6 +81,13 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`id="composer-status"`,
 		`aria-label="Send message"`,
 		`aria-label="Stop response"`,
+		`id="theme-toggle"`,
+		`data-theme-toggle`,
+		`aria-label="Current theme: system preference"`,
+		`data-theme-icon="light"`,
+		`data-theme-icon="dark"`,
+		`<circle cx="12" cy="12" r="4"></circle>`,
+		`<path d="M21 12.8A8 8 0 1 1 11.2 3 6.2 6.2 0 0 0 21 12.8z"></path>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want rendered shell substring %q", body, want)
@@ -116,6 +136,17 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		t.Fatalf("app CSS = %q, want composer focus-within indicator", body)
 	}
 	for _, want := range []string{
+		`.theme-toggle`,
+		`:root[data-theme="dark"]`,
+		`:root:not([data-theme])`,
+		`--chroma-color: #c9d1d9;`,
+		`--status-sweep-low: rgb(32 32 32);`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app CSS = %q, want theme style %q", body, want)
+		}
+	}
+	for _, want := range []string{
 		`status-sweep`,
 		`@keyframes status-sweep`,
 		`.message-status`,
@@ -141,6 +172,19 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET JS asset status = %d, want 200; body = %q", response.StatusCode, body)
 	}
+	for _, want := range []string{
+		`const themeStorageKey = 'pyttechat.theme';`,
+		`window.localStorage.getItem(themeStorageKey)`,
+		`window.matchMedia('(prefers-color-scheme: dark)')`,
+		`document.documentElement.dataset.theme`,
+		`data-theme-toggle`,
+		`refreshMermaidThemes`,
+		`window.mermaid.initialize({`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app JS = %q, want theme behavior %q", body, want)
+		}
+	}
 	if !strings.Contains(body, `message-error-detail`) || !strings.Contains(body, `replaceChildren(error)`) {
 		t.Fatalf("app JS = %q, want failed stream messages to replace partial output with an inline error", body)
 	}
@@ -163,6 +207,24 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	}
 	if strings.Contains(body, `prompt.focus()`) {
 		t.Fatalf("app JS = %q, did not expect turn completion to focus composer", body)
+	}
+
+	response, body = get(t, client, server.URL+"/assets/theme-init.js")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET theme init asset status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "text/javascript") && !strings.Contains(got, "application/javascript") {
+		t.Fatalf("theme init Content-Type = %q, want JavaScript", got)
+	}
+	for _, want := range []string{
+		`pyttechat.theme`,
+		`localStorage.getItem`,
+		`document.documentElement.dataset.theme`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("theme init JS = %q, want early theme behavior %q", body, want)
+		}
 	}
 
 	response, body = get(t, client, server.URL+"/assets/vendor/pico.min.css")

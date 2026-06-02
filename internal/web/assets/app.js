@@ -8,9 +8,13 @@
   const sendButton = document.getElementById('send-button');
   const stopButton = document.getElementById('stop-button');
   const composerStatus = document.getElementById('composer-status');
+  const themeToggle = document.querySelector('[data-theme-toggle]');
+  const themeIcons = themeToggle ? themeToggle.querySelectorAll('[data-theme-icon]') : [];
 
+  const themeStorageKey = 'pyttechat.theme';
   const copyIcon = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 7h10v13H8z"></path><path d="M6 17H4V3h12v2"></path></svg>';
   const nearBottomThreshold = 32;
+  const systemThemeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
   let currentTurn = null;
   let currentUser = null;
@@ -21,10 +25,79 @@
   let creatingTurn = false;
   let statusIDCounter = 0;
   let mermaidInitialized = false;
+  let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
+  let themeOverride = '';
 
   function csrfHeaderName() {
     return 'X-CSRF-Token';
+  }
+
+  function isTheme(value) {
+    return value === 'light' || value === 'dark';
+  }
+
+  function storedTheme() {
+    if (themeOverride) {
+      return themeOverride;
+    }
+    try {
+      const theme = window.localStorage.getItem(themeStorageKey);
+      return isTheme(theme) ? theme : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function systemTheme() {
+    return systemThemeQuery && systemThemeQuery.matches ? 'dark' : 'light';
+  }
+
+  function currentTheme() {
+    return storedTheme() || systemTheme();
+  }
+
+  function applyThemePreference() {
+    const theme = storedTheme();
+    if (theme) {
+      document.documentElement.dataset.theme = theme;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+    updateThemeToggle();
+  }
+
+  function updateThemeToggle() {
+    if (!themeToggle) {
+      return;
+    }
+    const theme = currentTheme();
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    themeToggle.dataset.themeCurrent = theme;
+    themeToggle.setAttribute('aria-label', `Current theme: ${theme}. Switch to ${nextTheme} mode`);
+    themeToggle.title = `Switch to ${nextTheme} mode`;
+    themeIcons.forEach(function (icon) {
+      icon.hidden = icon.dataset.themeIcon !== theme;
+    });
+  }
+
+  function lockTheme(theme) {
+    if (!isTheme(theme)) {
+      return;
+    }
+    themeOverride = theme;
+    try {
+      window.localStorage.setItem(themeStorageKey, theme);
+    } catch (error) {
+      // Apply the choice for this page even if browser storage is unavailable.
+    }
+    document.documentElement.dataset.theme = theme;
+    updateThemeToggle();
+    refreshMermaidThemes();
+  }
+
+  function toggleTheme() {
+    lockTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   }
 
   function setStatus(text) {
@@ -386,16 +459,43 @@
     });
   }
 
+  function mermaidThemeName() {
+    return currentTheme() === 'dark' ? 'dark' : 'default';
+  }
+
   function ensureMermaidInitialized() {
-    if (mermaidInitialized || !window.mermaid) {
+    if (!window.mermaid) {
+      return;
+    }
+    const nextTheme = mermaidThemeName();
+    if (mermaidInitialized && mermaidCurrentTheme === nextTheme) {
       return;
     }
     window.mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
-      theme: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+      theme: nextTheme,
     });
     mermaidInitialized = true;
+    mermaidCurrentTheme = nextTheme;
+  }
+
+  function refreshMermaidThemes() {
+    if (!window.mermaid) {
+      return;
+    }
+    const previousTheme = mermaidCurrentTheme;
+    ensureMermaidInitialized();
+    if (previousTheme === mermaidCurrentTheme) {
+      return;
+    }
+    document.querySelectorAll('.code-block-mermaid').forEach(function (block) {
+      const diagram = block.querySelector('.mermaid-render');
+      if (diagram) {
+        diagram.replaceChildren();
+      }
+      renderMermaidBlock(block);
+    });
   }
 
   function enhanceMermaidBlocks(root) {
@@ -783,6 +883,25 @@
     });
   }
 
+  if (themeToggle) {
+    themeToggle.addEventListener('click', toggleTheme);
+  }
+
+  if (systemThemeQuery) {
+    const onSystemThemeChange = function () {
+      if (storedTheme()) {
+        return;
+      }
+      applyThemePreference();
+      refreshMermaidThemes();
+    };
+    if (typeof systemThemeQuery.addEventListener === 'function') {
+      systemThemeQuery.addEventListener('change', onSystemThemeChange);
+    } else if (typeof systemThemeQuery.addListener === 'function') {
+      systemThemeQuery.addListener(onSystemThemeChange);
+    }
+  }
+
   document.addEventListener('click', async function (event) {
     if (!(event.target instanceof Element)) {
       return;
@@ -841,6 +960,7 @@
     }
   });
 
+  applyThemePreference();
   enhanceAllMessages();
   syncPromptHeight();
   updateComposerState();

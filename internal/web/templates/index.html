@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light dark">
     <meta name="csrf-token" content="{{.CSRFToken}}">
     <title>Pyttechat</title>
+    <script src="/assets/theme-init.js"></script>
     <link rel="stylesheet" href="/assets/vendor/pico.min.css">
     <link rel="stylesheet" href="/assets/vendor/katex/katex.min.css">
     <link rel="stylesheet" href="/assets/app.css">
@@ -21,9 +22,27 @@
           <h1>Pyttechat</h1>
           <p class="topbar-subtitle">Server-rendered chat</p>
         </div>
-        <div class="model-chip" aria-label="Active model">
-          <span class="model-chip-label">Model</span>
-          <span class="model-chip-value">{{.ModelLabel}}</span>
+        <div class="topbar-actions">
+          <div class="model-chip" aria-label="Active model">
+            <span class="model-chip-label">Model</span>
+            <span class="model-chip-value">{{.ModelLabel}}</span>
+          </div>
+          <button id="theme-toggle" class="theme-toggle" type="button" data-theme-toggle aria-label="Current theme: system preference">
+            <svg data-theme-icon="light" aria-hidden="true" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2"></path>
+              <path d="M12 20v2"></path>
+              <path d="m4.93 4.93 1.41 1.41"></path>
+              <path d="m17.66 17.66 1.41 1.41"></path>
+              <path d="M2 12h2"></path>
+              <path d="M20 12h2"></path>
+              <path d="m6.34 17.66-1.41 1.41"></path>
+              <path d="m19.07 4.93-1.41 1.41"></path>
+            </svg>
+            <svg data-theme-icon="dark" aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M21 12.8A8 8 0 1 1 11.2 3 6.2 6.2 0 0 0 21 12.8z"></path>
+            </svg>
+          </button>
         </div>
       </header>
 
