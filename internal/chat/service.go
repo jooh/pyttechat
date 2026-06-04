@@ -16,21 +16,49 @@ var (
 
 type Service struct {
 	client llm.Client
+	store  Store
 }
 
 func NewService(client llm.Client) Service {
 	return Service{client: client}
 }
 
+func NewPersistentService(client llm.Client, store Store) Service {
+	return Service{client: client, store: store}
+}
+
+type Store interface {
+	Messages(context.Context, int64) ([]llm.Message, error)
+	AppendTurn(context.Context, int64, llm.Message, llm.Message) error
+}
+
 func (s Service) NewSession() *Session {
 	return &Session{client: s.client}
 }
 
+func (s Service) NewPersistedSession(ctx context.Context, conversationID int64) (*Session, error) {
+	if s.store == nil {
+		return s.NewSession(), nil
+	}
+	messages, err := s.store.Messages(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return &Session{
+		client:         s.client,
+		store:          s.store,
+		conversationID: conversationID,
+		messages:       llm.CloneMessages(messages),
+	}, nil
+}
+
 type Session struct {
-	mu       sync.Mutex
-	client   llm.Client
-	messages []llm.Message
-	inFlight bool
+	mu             sync.Mutex
+	client         llm.Client
+	store          Store
+	conversationID int64
+	messages       []llm.Message
+	inFlight       bool
 }
 
 type SendOptions struct {
@@ -111,7 +139,10 @@ func (s *TurnStream) Next() (llm.Event, error) {
 		s.mergeCompletedPart(event.Part)
 	case llm.EventCompleted:
 		s.completed = true
-		s.finalize()
+		if err := s.finalize(); err != nil {
+			s.abort()
+			return event, err
+		}
 	case llm.EventError:
 		if event.Err != nil {
 			s.abort()
@@ -176,11 +207,10 @@ func (s *TurnStream) mergeCompletedPart(part llm.Part) {
 	s.assistantParts = append(s.assistantParts, part.Clone())
 }
 
-func (s *TurnStream) finalize() {
+func (s *TurnStream) finalize() error {
 	if !s.completed || s.finalized {
-		return
+		return nil
 	}
-	s.finalized = true
 
 	assistant := llm.Message{
 		Role:  llm.RoleAssistant,
@@ -189,8 +219,15 @@ func (s *TurnStream) finalize() {
 
 	s.session.mu.Lock()
 	defer s.session.mu.Unlock()
+	if s.session.store != nil {
+		if err := s.session.store.AppendTurn(context.Background(), s.session.conversationID, s.userMessage.Clone(), assistant.Clone()); err != nil {
+			return err
+		}
+	}
+	s.finalized = true
 	s.session.messages = append(s.session.messages, s.userMessage.Clone(), assistant)
 	s.session.inFlight = false
+	return nil
 }
 
 func (s *TurnStream) abort() {

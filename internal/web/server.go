@@ -19,9 +19,11 @@ import (
 	"sync"
 	"time"
 
+	"example.com/llm-chat-web/internal/auth"
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/markdown"
+	"example.com/llm-chat-web/internal/storage"
 )
 
 const (
@@ -36,10 +38,13 @@ var randomReader io.Reader = rand.Reader
 var timeNow = func() time.Time { return time.Now().UTC() }
 
 type Options struct {
-	Client          llm.Client
-	Model           string
-	ReasoningEffort string
-	CookieSecure    bool
+	Client              llm.Client
+	Model               string
+	ReasoningEffort     string
+	CookieSecure        bool
+	Store               storage.Store
+	Auth                *auth.Service
+	RegistrationEnabled bool
 }
 
 type Server struct {
@@ -47,6 +52,9 @@ type Server struct {
 	model           string
 	reasoningEffort string
 	cookieSecure    bool
+	store           storage.Store
+	auth            *auth.Service
+	registration    bool
 	template        *template.Template
 	markdown        *markdown.Renderer
 	assets          http.Handler
@@ -56,11 +64,14 @@ type Server struct {
 }
 
 type browserSession struct {
-	id    string
-	csrf  string
-	chat  *chat.Session
-	turns map[string]*turnJob
-	mu    sync.Mutex
+	id             string
+	csrf           string
+	userID         int64
+	username       string
+	conversationID int64
+	chat           *chat.Session
+	turns          map[string]*turnJob
+	mu             sync.Mutex
 }
 
 func NewServer(opts Options) *Server {
@@ -72,6 +83,9 @@ func NewServer(opts Options) *Server {
 		model:           opts.Model,
 		reasoningEffort: opts.ReasoningEffort,
 		cookieSecure:    opts.CookieSecure,
+		store:           opts.Store,
+		auth:            opts.Auth,
+		registration:    opts.RegistrationEnabled,
 		template:        tmpl,
 		markdown:        renderer,
 		assets:          http.StripPrefix("/assets/", http.FileServer(http.FS(assets))),
@@ -81,16 +95,26 @@ func NewServer(opts Options) *Server {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case r.URL.Path == "/" && r.Method == http.MethodGet:
-		s.handleIndex(w, r)
+	case strings.HasPrefix(r.URL.Path, "/assets/") && r.Method == http.MethodGet:
+		s.assets.ServeHTTP(w, r)
 	case r.URL.Path == "/favicon.ico" && r.Method == http.MethodGet:
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/login" && r.Method == http.MethodGet:
+		s.handleLoginForm(w, r)
+	case r.URL.Path == "/login" && r.Method == http.MethodPost:
+		s.handleLogin(w, r)
+	case r.URL.Path == "/register" && r.Method == http.MethodGet:
+		s.handleRegisterForm(w, r)
+	case r.URL.Path == "/register" && r.Method == http.MethodPost:
+		s.handleRegister(w, r)
+	case r.URL.Path == "/logout" && r.Method == http.MethodPost:
+		s.handleLogout(w, r)
+	case r.URL.Path == "/" && r.Method == http.MethodGet:
+		s.handleIndex(w, r)
 	case r.URL.Path == "/chat/turns" && r.Method == http.MethodPost:
 		s.handleCreateTurn(w, r)
 	case strings.HasPrefix(r.URL.Path, "/chat/turns/"):
 		s.handleTurnRoute(w, r)
-	case strings.HasPrefix(r.URL.Path, "/assets/") && r.Method == http.MethodGet:
-		s.assets.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -99,6 +123,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	session, err := s.session(w, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidSession) {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
 		return
 	}
@@ -107,6 +135,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:  session.csrf,
 		ModelLabel: modelDisplayLabel(s.model),
 		Messages:   viewMessages(session.chat.Messages(), s.markdown),
+		Username:   session.username,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.template.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -117,6 +146,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 	session, err := s.session(w, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidSession) {
+			writeJSONError(w, http.StatusUnauthorized, "authentication_required", "authentication required")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
 		return
 	}
@@ -197,6 +230,10 @@ func (s *Server) handleTurnRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID string) {
 	session, err := s.session(w, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidSession) {
+			writeJSONError(w, http.StatusUnauthorized, "authentication_required", "authentication required")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
 		return
 	}
@@ -253,6 +290,10 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID string) {
 	session, err := s.session(w, r)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidSession) {
+			writeJSONError(w, http.StatusUnauthorized, "authentication_required", "authentication required")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
 		return
 	}
@@ -275,7 +316,190 @@ func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID 
 	})
 }
 
+func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	session, err := s.publicSession(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
+		return
+	}
+	if session.userID > 0 {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderAuthPage(w, http.StatusOK, authPageData{
+		Title:               "Sign in",
+		Action:              "/login",
+		SubmitLabel:         "Sign in",
+		CSRFToken:           session.csrf,
+		RegistrationEnabled: s.registration,
+	})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	session, err := s.publicSession(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
+		return
+	}
+	if !validCSRF(r, session.csrf) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	user, err := s.auth.Authenticate(r.Context(), r.FormValue("username"), r.FormValue("password"))
+	if err != nil {
+		s.renderAuthPage(w, http.StatusUnauthorized, authPageData{
+			Title:               "Sign in",
+			Action:              "/login",
+			SubmitLabel:         "Sign in",
+			CSRFToken:           session.csrf,
+			Error:               "Invalid username or password.",
+			RegistrationEnabled: s.registration,
+		})
+		return
+	}
+	browserSession, err := s.auth.RotateBrowserSession(r.Context(), session.id, user.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not rotate session")
+		return
+	}
+	s.removeBrowserSession(session.id)
+	s.setSessionCookie(w, browserSession.CookieValue, browserSession.Session.ExpiresAt)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) handleRegisterForm(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.registration {
+		http.NotFound(w, r)
+		return
+	}
+	session, err := s.publicSession(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
+		return
+	}
+	if session.userID > 0 {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderAuthPage(w, http.StatusOK, authPageData{
+		Title:               "Create account",
+		Action:              "/register",
+		SubmitLabel:         "Create account",
+		CSRFToken:           session.csrf,
+		RegistrationEnabled: s.registration,
+	})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.registration {
+		http.NotFound(w, r)
+		return
+	}
+	session, err := s.publicSession(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
+		return
+	}
+	if !validCSRF(r, session.csrf) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	user, err := s.auth.Register(r.Context(), r.FormValue("username"), r.FormValue("password"))
+	if err != nil {
+		message := "Could not create account."
+		switch {
+		case errors.Is(err, auth.ErrInvalidUsername):
+			message = "Use 3-32 letters, numbers, dots, dashes, or underscores."
+		case errors.Is(err, auth.ErrWeakPassword):
+			message = "Password must be at least 8 characters."
+		case errors.Is(err, auth.ErrUsernameTaken):
+			message = "Username is already taken."
+		}
+		s.renderAuthPage(w, http.StatusBadRequest, authPageData{
+			Title:               "Create account",
+			Action:              "/register",
+			SubmitLabel:         "Create account",
+			CSRFToken:           session.csrf,
+			Error:               message,
+			RegistrationEnabled: s.registration,
+		})
+		return
+	}
+	browserSession, err := s.auth.RotateBrowserSession(r.Context(), session.id, user.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not rotate session")
+		return
+	}
+	s.removeBrowserSession(session.id)
+	s.setSessionCookie(w, browserSession.CookieValue, browserSession.Session.ExpiresAt)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.authEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	session, err := s.publicSession(w, r)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not read session")
+		return
+	}
+	if !validCSRF(r, session.csrf) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if session.id != "" {
+		if err := s.auth.Logout(r.Context(), session.id); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "session_error", "could not delete session")
+			return
+		}
+		s.removeBrowserSession(session.id)
+	}
+	s.clearSessionCookie(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+func (s *Server) renderAuthPage(w http.ResponseWriter, status int, data authPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := s.template.ExecuteTemplate(w, "auth.html", data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) session(w http.ResponseWriter, r *http.Request) (*browserSession, error) {
+	if s.authEnabled() {
+		return s.authenticatedSession(w, r)
+	}
+	return s.legacySession(w, r)
+}
+
+func (s *Server) legacySession(w http.ResponseWriter, r *http.Request) (*browserSession, error) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
 		s.mu.Lock()
 		session := s.sessions[cookie.Value]
@@ -317,6 +541,121 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) (*browserSessio
 	return session, nil
 }
 
+func (s *Server) authEnabled() bool {
+	return s.auth != nil && s.store != nil
+}
+
+func (s *Server) publicSession(w http.ResponseWriter, r *http.Request) (*browserSession, error) {
+	if !s.authEnabled() {
+		return s.legacySession(w, r)
+	}
+	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
+		session, verifyErr := s.auth.VerifyBrowserSession(r.Context(), cookie.Value)
+		if verifyErr == nil {
+			return s.browserSessionForStoredSession(r.Context(), session)
+		}
+		if !errors.Is(verifyErr, auth.ErrInvalidSession) && !errors.Is(verifyErr, auth.ErrSessionExpired) {
+			return nil, verifyErr
+		}
+	}
+	browserSession, err := s.auth.CreateAnonymousBrowserSession(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	s.setSessionCookie(w, browserSession.CookieValue, browserSession.Session.ExpiresAt)
+	return s.browserSessionForStoredSession(r.Context(), browserSession.Session)
+}
+
+func (s *Server) authenticatedSession(w http.ResponseWriter, r *http.Request) (*browserSession, error) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil, auth.ErrInvalidSession
+	}
+	session, err := s.auth.VerifyBrowserSession(r.Context(), cookie.Value)
+	if err != nil {
+		if errors.Is(err, auth.ErrSessionExpired) {
+			s.clearSessionCookie(w)
+			return nil, auth.ErrInvalidSession
+		}
+		return nil, err
+	}
+	if !session.Authenticated() {
+		return nil, auth.ErrInvalidSession
+	}
+	return s.browserSessionForStoredSession(r.Context(), session)
+}
+
+func (s *Server) browserSessionForStoredSession(ctx context.Context, stored storage.Session) (*browserSession, error) {
+	s.mu.Lock()
+	session := s.sessions[stored.ID]
+	s.mu.Unlock()
+	if session != nil {
+		return session, nil
+	}
+
+	var chatSession *chat.Session
+	var conversationID int64
+	var username string
+	if stored.UserID > 0 {
+		username = "Account"
+		conversation, err := s.store.DefaultConversationForUser(ctx, stored.UserID)
+		if err != nil {
+			return nil, err
+		}
+		conversationID = conversation.ID
+		chatSession, err = chat.NewPersistentService(s.client, s.store).NewPersistedSession(ctx, conversation.ID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		chatSession = chat.NewService(s.client).NewSession()
+	}
+	session = &browserSession{
+		id:             stored.ID,
+		csrf:           stored.CSRFToken,
+		userID:         stored.UserID,
+		username:       username,
+		conversationID: conversationID,
+		chat:           chatSession,
+		turns:          map[string]*turnJob{},
+	}
+	s.mu.Lock()
+	s.sessions[stored.ID] = session
+	s.mu.Unlock()
+	return session, nil
+}
+
+func (s *Server) removeBrowserSession(id string) {
+	s.mu.Lock()
+	delete(s.sessions, id)
+	s.mu.Unlock()
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {
+	// #nosec G124 -- CookieSecure is configurable so local HTTP development can use cookies; production should enable it.
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   s.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func (s *browserSession) turn(id string) *turnJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -324,7 +663,7 @@ func (s *browserSession) turn(id string) *turnJob {
 }
 
 func validCSRF(r *http.Request, token string) bool {
-	return token != "" && r.Header.Get(csrfHeaderName) == token
+	return token != "" && (r.Header.Get(csrfHeaderName) == token || r.FormValue("csrf_token") == token)
 }
 
 type createTurnRequest struct {
@@ -341,7 +680,17 @@ type createTurnResponse struct {
 type pageData struct {
 	CSRFToken  string
 	ModelLabel string
+	Username   string
 	Messages   []viewMessage
+}
+
+type authPageData struct {
+	Title               string
+	Action              string
+	SubmitLabel         string
+	CSRFToken           string
+	Error               string
+	RegistrationEnabled bool
 }
 
 type viewMessage struct {

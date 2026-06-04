@@ -10,16 +10,22 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"example.com/llm-chat-web/internal/auth"
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
+	"example.com/llm-chat-web/internal/storage"
+	"example.com/llm-chat-web/internal/web"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func runCommand(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -30,6 +36,30 @@ func runCommand(t *testing.T, stdin string, args ...string) (int, string, string
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
 	t.Setenv("PYTTECHAT_WEB_ADDR", "")
 	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -138,6 +168,110 @@ func TestChatCommandSendsPriorTurnToProxy(t *testing.T) {
 	}
 	if secondUser["role"] != "user" || secondUser["content"] != "second" {
 		t.Fatalf("second input = %#v, want second user turn", secondUser)
+	}
+}
+
+func TestAskAndChatUsePersistedAuthenticatedDefaultConversation(t *testing.T) {
+	databaseURL := createCLIAuthUser(t, "cli-user", "correct horse")
+
+	var requestBodies []map[string]any
+	handler := fakeprovider.NewHandler()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll request body error = %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(rawBody))
+
+		var body map[string]any
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			t.Fatalf("Decode request body error = %v", err)
+		}
+		requestBodies = append(requestBodies, body)
+		handler.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+
+	t.Setenv("PYTTECHAT_DATABASE_URL", databaseURL)
+	t.Setenv("PYTTECHAT_USERNAME", "cli-user")
+	t.Setenv("PYTTECHAT_PASSWORD", "correct horse")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", proxy.URL)
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "from ask"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("ask exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != "Echo: from ask\n" {
+		t.Fatalf("ask stdout = %q, want echo", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute(context.Background(), []string{"chat"}, strings.NewReader("from chat\n"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("chat exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != "Echo: from chat\n" {
+		t.Fatalf("chat stdout = %q, want echo", stdout.String())
+	}
+
+	if len(requestBodies) != 2 {
+		t.Fatalf("request count = %d, want ask and chat requests", len(requestBodies))
+	}
+	input := requireSlice(t, requestBodies[1]["input"], "chat input")
+	if len(input) != 4 {
+		t.Fatalf("chat input count = %d, want persisted ask user/reasoning/assistant plus chat user: %#v", len(input), input)
+	}
+	if requireMap(t, input[0], "input[0]")["content"] != "from ask" ||
+		requireMap(t, input[2], "input[2]")["content"] != "Echo: from ask" ||
+		requireMap(t, input[3], "input[3]")["content"] != "from chat" {
+		t.Fatalf("chat input = %#v, want ask history before chat prompt", input)
+	}
+
+	store, err := storage.OpenSQLite(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("OpenSQLite web store error = %v, want nil", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate web store error = %v, want nil", err)
+	}
+	webServer := httptest.NewServer(web.NewServer(web.Options{
+		Client: cliEventClient{},
+		Store:  store,
+		Auth: auth.NewService(auth.Options{
+			Store:      store,
+			BCryptCost: bcrypt.MinCost,
+		}),
+		RegistrationEnabled: true,
+	}))
+	defer webServer.Close()
+
+	webClient := newCookieClient(t)
+	loginCSRF := fetchServedLoginCSRFToken(t, webClient, webServer.URL)
+	response, body := doServedRequest(t, webClient, newServedFormRequest(t, http.MethodPost, webServer.URL+"/login", map[string]string{
+		"csrf_token": loginCSRF,
+		"username":   "cli-user",
+		"password":   "correct horse",
+	}))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("POST /login final status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	for _, want := range []string{"from ask", "Echo: from ask", "from chat", "Echo: from chat"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("web body = %q, want persisted CLI history %q", body, want)
+		}
 	}
 }
 
@@ -455,6 +589,12 @@ func TestServeCommandStartsWebHandler(t *testing.T) {
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
 	t.Setenv("PYTTECHAT_WEB_ADDR", "")
 	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -468,7 +608,7 @@ func TestServeCommandStartsWebHandler(t *testing.T) {
 
 	addr := waitForListenAddr(t, stderr)
 	client := &http.Client{Timeout: time.Second}
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/", nil)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/login", nil)
 	if err != nil {
 		t.Fatalf("NewRequest error = %v", err)
 	}
@@ -480,7 +620,7 @@ func TestServeCommandStartsWebHandler(t *testing.T) {
 
 	if response.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(response.Body)
-		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, raw)
+		t.Fatalf("GET /login status = %d, want 200; body = %q", response.StatusCode, raw)
 	}
 	cookies := response.Cookies()
 	if len(cookies) != 1 {
@@ -508,6 +648,12 @@ func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
 	t.Setenv("PYTTECHAT_WEB_ADDR", "")
 	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
 
 	var proxyMu sync.Mutex
 	var proxyAuth []string
@@ -556,7 +702,7 @@ func TestServeCommandSubmitsChatThroughServedWebHandler(t *testing.T) {
 	addr := waitForListenAddr(t, stderr)
 	client := newCookieClient(t)
 	baseURL := "http://" + addr
-	csrfToken := fetchServedCSRFToken(t, client, baseURL)
+	csrfToken := registerServedUser(t, client, baseURL, "served-user", "correct horse")
 	turn := createServedTurn(t, client, baseURL, csrfToken, "hello from browser")
 
 	eventsResponse, eventsBody := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+turn.StreamURL, nil))
@@ -634,6 +780,13 @@ func TestServeCommandReportsBindFailure(t *testing.T) {
 }
 
 func TestServeCommandReportsInjectedShutdownAndServeErrors(t *testing.T) {
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "true")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+	t.Setenv("PYTTECHAT_USERNAME", "")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+
 	originalListen := listenTCP
 	originalServer := newWebServer
 	t.Cleanup(func() {
@@ -652,10 +805,15 @@ func TestServeCommandReportsInjectedShutdownAndServeErrors(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
-		code := Execute(ctx, []string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		result := make(chan int, 1)
+		go func() {
+			result <- Execute(ctx, []string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+		}()
+		server.waitForServe(t)
+		cancel()
+		code := waitExitCode(t, result)
 		if code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
 		}
@@ -871,19 +1029,25 @@ func (a fakeAddr) String() string {
 type fakeWebServer struct {
 	serveErr    error
 	shutdownErr error
+	started     chan struct{}
 	done        chan struct{}
 	closeOnce   sync.Once
+	startOnce   sync.Once
 }
 
 func newFakeWebServer(serveErr, shutdownErr error) *fakeWebServer {
 	return &fakeWebServer{
 		serveErr:    serveErr,
 		shutdownErr: shutdownErr,
+		started:     make(chan struct{}),
 		done:        make(chan struct{}),
 	}
 }
 
 func (s *fakeWebServer) Serve(net.Listener) error {
+	s.startOnce.Do(func() {
+		close(s.started)
+	})
 	if s.serveErr != nil {
 		return s.serveErr
 	}
@@ -896,6 +1060,28 @@ func (s *fakeWebServer) Shutdown(context.Context) error {
 		close(s.done)
 	})
 	return s.shutdownErr
+}
+
+func (s *fakeWebServer) waitForServe(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-s.started:
+	case <-time.After(time.Second):
+		t.Fatalf("fake web server did not start serving")
+	}
+}
+
+func waitExitCode(t *testing.T, result <-chan int) int {
+	t.Helper()
+
+	select {
+	case code := <-result:
+		return code
+	case <-time.After(time.Second):
+		t.Fatalf("command did not exit")
+		return 1
+	}
 }
 
 func waitForListenAddr(t *testing.T, stderr *safeBuffer) string {
@@ -954,6 +1140,43 @@ func newCookieClient(t *testing.T) *http.Client {
 	}
 }
 
+func createCLIAuthUser(t *testing.T, username, password string) string {
+	t.Helper()
+
+	databaseURL := "sqlite://" + filepath.Join(t.TempDir(), "pyttechat.db")
+	store, err := storage.OpenSQLite(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("OpenSQLite error = %v, want nil", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate error = %v, want nil", err)
+	}
+	authService := auth.NewService(auth.Options{
+		Store:      store,
+		BCryptCost: bcrypt.MinCost,
+	})
+	if _, err := authService.Register(context.Background(), username, password); err != nil {
+		t.Fatalf("Register error = %v, want nil", err)
+	}
+	return databaseURL
+}
+
+func fetchServedLoginCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+
+	response, body := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+"/login", nil))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	token := csrfFromServedHTML(body)
+	if token == "" {
+		t.Fatalf("login CSRF token is empty in body %q", body)
+	}
+	return token
+}
+
 func fetchServedCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
 	t.Helper()
 
@@ -967,6 +1190,36 @@ func fetchServedCSRFToken(t *testing.T, client *http.Client, baseURL string) str
 		t.Fatalf("CSRF token is empty in body %q", body)
 	}
 	return token
+}
+
+func registerServedUser(t *testing.T, client *http.Client, baseURL, username, password string) string {
+	t.Helper()
+
+	response, body := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+"/register", nil))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /register status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	csrfToken := csrfFromServedHTML(body)
+	if csrfToken == "" {
+		t.Fatalf("register CSRF token is empty in body %q", body)
+	}
+
+	request := newServedFormRequest(t, http.MethodPost, baseURL+"/register", map[string]string{
+		"csrf_token": csrfToken,
+		"username":   username,
+		"password":   password,
+	})
+	response, body = doServedRequest(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("POST /register final status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	rootCSRF := csrfFromServedHTML(body)
+	if rootCSRF == "" {
+		t.Fatalf("root CSRF token is empty after registration; body = %q", body)
+	}
+	return rootCSRF
 }
 
 func createServedTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt string) servedTurnResponse {
@@ -990,6 +1243,21 @@ func createServedTurn(t *testing.T, client *http.Client, baseURL, csrfToken, pro
 		t.Fatalf("turn response = %#v, want stable ids and stream URL", payload)
 	}
 	return payload
+}
+
+func newServedFormRequest(t *testing.T, method, targetURL string, values map[string]string) *http.Request {
+	t.Helper()
+
+	form := make(url.Values, len(values))
+	for key, value := range values {
+		form.Set(key, value)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), method, targetURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return request
 }
 
 func newServedRequest(t *testing.T, method, url string, payload any) *http.Request {

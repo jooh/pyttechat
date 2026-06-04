@@ -11,14 +11,20 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"example.com/llm-chat-web/internal/auth"
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
+	"example.com/llm-chat-web/internal/storage"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
@@ -107,6 +113,145 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	}
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("session cookie SameSite = %v, want Lax", cookie.SameSite)
+	}
+}
+
+func TestAuthProtectedRoutesRedirectAndPublicPagesSetSecureCookie(t *testing.T) {
+	handler := newAuthTestHandler(t, dummy.NewClient(), true, true)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testNoRedirectHTTPClient(t)
+	response, body := get(t, client, server.URL+"/")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET / status = %d, want 303; body = %q", response.StatusCode, body)
+	}
+	if location := response.Header.Get("Location"); location != "/login" {
+		t.Fatalf("GET / Location = %q, want /login", location)
+	}
+
+	response, body = get(t, client, server.URL+"/login")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, "Sign in") || csrfFromHTML(t, body) == "" {
+		t.Fatalf("GET /login body = %q, want login form with CSRF token", body)
+	}
+	cookies := response.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie count = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != sessionCookieName || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("session cookie = %#v, want secure HttpOnly Lax session cookie", cookie)
+	}
+	if !strings.Contains(cookie.Value, ".") {
+		t.Fatalf("session cookie value = %q, want sessionID.secret format", cookie.Value)
+	}
+}
+
+func TestAuthRegisterLoginLogoutAndCSRF(t *testing.T) {
+	handler := newAuthTestHandler(t, dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}}), true, false)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	registerCSRF := fetchAuthCSRFToken(t, client, server.URL, "/register")
+
+	badRequest := newFormRequest(t, http.MethodPost, server.URL+"/register", map[string]string{
+		"username": "alice",
+		"password": "correct horse",
+	})
+	response, body := do(t, client, badRequest)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /register without csrf status = %d, want 403; body = %q", response.StatusCode, body)
+	}
+
+	rootCSRF := submitAuthForm(t, client, server.URL+"/register", map[string]string{
+		"csrf_token": registerCSRF,
+		"username":   "alice",
+		"password":   "correct horse",
+	})
+	turn := createTurn(t, client, server.URL, rootCSRF, "hello")
+	response, body = get(t, client, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	logoutRequest := newFormRequest(t, http.MethodPost, server.URL+"/logout", nil)
+	response, body = do(t, client, logoutRequest)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /logout without csrf status = %d, want 403; body = %q", response.StatusCode, body)
+	}
+
+	logoutRequest = newFormRequest(t, http.MethodPost, server.URL+"/logout", map[string]string{"csrf_token": rootCSRF})
+	response, body = do(t, client, logoutRequest)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("POST /logout final status = %d, want 200 after redirect; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, "Sign in") {
+		t.Fatalf("POST /logout body = %q, want login page after redirect", body)
+	}
+
+	loginCSRF := csrfFromHTML(t, body)
+	rootCSRF = submitAuthForm(t, client, server.URL+"/login", map[string]string{
+		"csrf_token": loginCSRF,
+		"username":   "ALICE",
+		"password":   "correct horse",
+	})
+	response, body = get(t, client, server.URL+"/")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / after login status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if rootCSRF == "" || !strings.Contains(body, "hello") || !strings.Contains(body, "answer") {
+		t.Fatalf("GET / after login body = %q, want persisted history and csrf", body)
+	}
+}
+
+func TestAuthPerUserHistoryIsolationAndPersistedReload(t *testing.T) {
+	store := newWebTestStore(t)
+	llmClient := dummy.NewClient(dummy.Turn{TextChunks: []string{"first answer"}})
+	handler := newAuthTestHandlerForStore(t, store, llmClient, true, false)
+	server := httptest.NewServer(handler)
+
+	alice := testHTTPClient(t)
+	aliceCSRF := registerAuthUser(t, alice, server.URL, "alice", "correct horse")
+	turn := createTurn(t, alice, server.URL, aliceCSRF, "alice prompt")
+	response, body := get(t, alice, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("alice events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	bob := testHTTPClient(t)
+	bobCSRF := registerAuthUser(t, bob, server.URL, "bob", "correct horse")
+	response, body = get(t, bob, server.URL+"/")
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bob GET / status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if bobCSRF == "" || strings.Contains(body, "alice prompt") || strings.Contains(body, "first answer") {
+		t.Fatalf("bob body = %q, did not expect alice history", body)
+	}
+
+	server.Close()
+	restarted := httptest.NewServer(newAuthTestHandlerForStore(t, store, dummy.NewClient(), true, false))
+	defer restarted.Close()
+
+	response, body = get(t, alice, restarted.URL+"/")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("alice restarted GET / status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if !strings.Contains(body, "alice prompt") || !strings.Contains(body, "first answer") {
+		t.Fatalf("alice restarted body = %q, want persisted history", body)
 	}
 }
 
@@ -1613,6 +1758,111 @@ func testHTTPClient(t *testing.T) *http.Client {
 		Jar:     jar,
 		Timeout: 2 * time.Second,
 	}
+}
+
+func testNoRedirectHTTPClient(t *testing.T) *http.Client {
+	t.Helper()
+
+	client := testHTTPClient(t)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return client
+}
+
+func newAuthTestHandler(t *testing.T, client llm.Client, registration, secureCookies bool) *Server {
+	t.Helper()
+	return newAuthTestHandlerForStore(t, newWebTestStore(t), client, registration, secureCookies)
+}
+
+func newAuthTestHandlerForStore(t *testing.T, store storage.Store, client llm.Client, registration, secureCookies bool) *Server {
+	t.Helper()
+	authService := auth.NewService(auth.Options{
+		Store:      store,
+		BCryptCost: bcrypt.MinCost,
+	})
+	return NewServer(Options{
+		Client:              client,
+		CookieSecure:        secureCookies,
+		Store:               store,
+		Auth:                authService,
+		RegistrationEnabled: registration,
+	})
+}
+
+func newWebTestStore(t *testing.T) storage.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pyttechat.db")
+	store, err := storage.OpenSQLite(context.Background(), "sqlite://"+path)
+	if err != nil {
+		t.Fatalf("OpenSQLite error = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	})
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate error = %v, want nil", err)
+	}
+	return store
+}
+
+func fetchAuthCSRFToken(t *testing.T, client *http.Client, baseURL, path string) string {
+	t.Helper()
+
+	response, body := get(t, client, baseURL+path)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200; body = %q", path, response.StatusCode, body)
+	}
+	token := csrfFromHTML(t, body)
+	if token == "" {
+		t.Fatalf("CSRF token is empty in body %q", body)
+	}
+	return token
+}
+
+func registerAuthUser(t *testing.T, client *http.Client, baseURL, username, password string) string {
+	t.Helper()
+
+	csrfToken := fetchAuthCSRFToken(t, client, baseURL, "/register")
+	return submitAuthForm(t, client, baseURL+"/register", map[string]string{
+		"csrf_token": csrfToken,
+		"username":   username,
+		"password":   password,
+	})
+}
+
+func submitAuthForm(t *testing.T, client *http.Client, targetURL string, values map[string]string) string {
+	t.Helper()
+
+	request := newFormRequest(t, http.MethodPost, targetURL, values)
+	response, body := do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s final status = %d, want 200; body = %q", targetURL, response.StatusCode, body)
+	}
+	token := csrfFromHTML(t, body)
+	if token == "" {
+		t.Fatalf("CSRF token is empty after auth form; body = %q", body)
+	}
+	return token
+}
+
+func newFormRequest(t *testing.T, method, targetURL string, values map[string]string) *http.Request {
+	t.Helper()
+
+	form := make(url.Values, len(values))
+	for key, value := range values {
+		form.Set(key, value)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), method, targetURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return request
 }
 
 func fetchCSRFToken(t *testing.T, client *http.Client, baseURL string) string {

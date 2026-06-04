@@ -14,11 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"example.com/llm-chat-web/internal/auth"
 	"example.com/llm-chat-web/internal/buildinfo"
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 	"example.com/llm-chat-web/internal/llm/openresponses"
+	"example.com/llm-chat-web/internal/storage"
 	"example.com/llm-chat-web/internal/web"
 
 	"github.com/spf13/cobra"
@@ -32,6 +34,12 @@ type rootOptions struct {
 	proxyTimeout    time.Duration
 	webAddr         string
 	secureCookies   bool
+	databaseURL     string
+	registration    bool
+	sessionTTL      time.Duration
+	username        string
+	password        string
+	passwordFile    string
 }
 
 type webServer interface {
@@ -65,10 +73,21 @@ func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 		proxyTimeout:  openresponses.DefaultTimeout,
 		webAddr:       envString("PYTTECHAT_WEB_ADDR", ":3000"),
 		secureCookies: envBool("PYTTECHAT_SECURE_COOKIES"),
+		databaseURL:   envString("PYTTECHAT_DATABASE_URL", storage.DefaultDatabaseURL),
+		registration:  envBoolDefault("PYTTECHAT_REGISTRATION_ENABLED", true),
+		sessionTTL:    auth.DefaultSessionTTL,
+		username:      os.Getenv("PYTTECHAT_USERNAME"),
+		password:      os.Getenv("PYTTECHAT_PASSWORD"),
+		passwordFile:  os.Getenv("PYTTECHAT_PASSWORD_FILE"),
 	}
 	if value := os.Getenv("PYTTECHAT_LLM_PROXY_TIMEOUT"); value != "" {
 		if timeout, err := time.ParseDuration(value); err == nil && timeout > 0 {
 			opts.proxyTimeout = timeout
+		}
+	}
+	if value := os.Getenv("PYTTECHAT_SESSION_TTL"); value != "" {
+		if ttl, err := time.ParseDuration(value); err == nil && ttl > 0 {
+			opts.sessionTTL = ttl
 		}
 	}
 
@@ -84,6 +103,8 @@ func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	rootCmd.PersistentFlags().StringVarP(&opts.model, "model", "m", opts.model, "model name to forward to the LLM proxy")
 	rootCmd.PersistentFlags().StringVar(&opts.reasoningEffort, "reasoning-effort", opts.reasoningEffort, "reasoning effort to forward to the LLM proxy")
 	rootCmd.PersistentFlags().DurationVar(&opts.proxyTimeout, "proxy-timeout", opts.proxyTimeout, "LLM proxy request timeout")
+	rootCmd.PersistentFlags().StringVar(&opts.databaseURL, "database-url", opts.databaseURL, "application database URL")
+	rootCmd.PersistentFlags().DurationVar(&opts.sessionTTL, "session-ttl", opts.sessionTTL, "browser session lifetime")
 
 	rootCmd.AddCommand(newAskCommand(stdout, stderr, &opts))
 	rootCmd.AddCommand(newChatCommand(stdin, stdout, stderr, &opts))
@@ -102,11 +123,26 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			store, err := storage.OpenSQLite(ctx, opts.databaseURL)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			if err := store.Migrate(ctx); err != nil {
+				return err
+			}
+			authService := auth.NewService(auth.Options{
+				Store:      store,
+				SessionTTL: opts.sessionTTL,
+			})
 			handler := web.NewServer(web.Options{
-				Client:          newLLMClient(*opts),
-				Model:           opts.model,
-				ReasoningEffort: opts.reasoningEffort,
-				CookieSecure:    opts.secureCookies,
+				Client:              newLLMClient(*opts),
+				Model:               opts.model,
+				ReasoningEffort:     opts.reasoningEffort,
+				CookieSecure:        opts.secureCookies,
+				Store:               store,
+				Auth:                authService,
+				RegistrationEnabled: opts.registration,
 			})
 			server := newWebServer(opts.webAddr, handler)
 			listener, err := listenTCP(ctx, opts.webAddr)
@@ -141,6 +177,7 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 	command.SetErr(stderr)
 	command.Flags().StringVar(&opts.webAddr, "addr", opts.webAddr, "HTTP listen address")
 	command.Flags().BoolVar(&opts.secureCookies, "secure-cookies", opts.secureCookies, "set the Secure attribute on browser session cookies")
+	command.Flags().BoolVar(&opts.registration, "registration-enabled", opts.registration, "allow public username/password registration")
 	return command
 }
 
@@ -156,7 +193,11 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 				return fmt.Errorf("prompt is required")
 			}
 
-			session := chat.NewService(newLLMClient(*opts)).NewSession()
+			session, closeSession, err := newCLIChatSession(cmd.Context(), *opts)
+			if err != nil {
+				return err
+			}
+			defer closeSession()
 			stream, err := session.Send(cmd.Context(), strings.Join(args, " "), chat.SendOptions{
 				Model:                 opts.model,
 				ReasoningEffort:       opts.reasoningEffort,
@@ -177,10 +218,14 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "chat",
-		Short: "Start an ephemeral multi-turn chat session",
+		Short: "Start a multi-turn chat session",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			session := chat.NewService(newLLMClient(*opts)).NewSession()
+			session, closeSession, err := newCLIChatSession(cmd.Context(), *opts)
+			if err != nil {
+				return err
+			}
+			defer closeSession()
 			scanner := bufio.NewScanner(stdin)
 			for scanner.Scan() {
 				stream, err := session.Send(cmd.Context(), scanner.Text(), chat.SendOptions{
@@ -213,6 +258,61 @@ func newLLMClient(opts rootOptions) llm.Client {
 	return dummy.NewClient()
 }
 
+func newCLIChatSession(ctx context.Context, opts rootOptions) (*chat.Session, func(), error) {
+	if strings.TrimSpace(opts.username) == "" {
+		return chat.NewService(newLLMClient(opts)).NewSession(), func() {}, nil
+	}
+	password, err := cliPassword(opts)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	store, err := storage.OpenSQLite(ctx, opts.databaseURL)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	closeStore := func() {
+		_ = store.Close()
+	}
+	if err := store.Migrate(ctx); err != nil {
+		closeStore()
+		return nil, func() {}, err
+	}
+	authService := auth.NewService(auth.Options{
+		Store:      store,
+		SessionTTL: opts.sessionTTL,
+	})
+	user, err := authService.Authenticate(ctx, opts.username, password)
+	if err != nil {
+		closeStore()
+		return nil, func() {}, err
+	}
+	conversation, err := store.DefaultConversationForUser(ctx, user.ID)
+	if err != nil {
+		closeStore()
+		return nil, func() {}, err
+	}
+	session, err := chat.NewPersistentService(newLLMClient(opts), store).NewPersistedSession(ctx, conversation.ID)
+	if err != nil {
+		closeStore()
+		return nil, func() {}, err
+	}
+	return session, closeStore, nil
+}
+
+func cliPassword(opts rootOptions) (string, error) {
+	if opts.password != "" {
+		return opts.password, nil
+	}
+	if opts.passwordFile == "" {
+		return "", fmt.Errorf("PYTTECHAT_PASSWORD or PYTTECHAT_PASSWORD_FILE is required when PYTTECHAT_USERNAME is set")
+	}
+	data, err := os.ReadFile(opts.passwordFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(data), "\r\n"), nil
+}
+
 func envString(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value
@@ -222,6 +322,19 @@ func envString(name, fallback string) string {
 
 func envBool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func envBoolDefault(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
 	case "1", "true", "t", "yes", "y", "on":
 		return true
 	default:

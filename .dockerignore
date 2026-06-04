@@ -1,0 +1,12 @@
+.agent/
+.bin/
+.cache/
+.codex/
+.git/
+bin/
+coverage.out
+Dockerfile
+*.test
+*.db
+*.sqlite
+*.sqlite3

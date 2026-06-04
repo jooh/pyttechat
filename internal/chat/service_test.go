@@ -136,6 +136,111 @@ func TestSessionSendIncludesPriorTurnsAndReasoning(t *testing.T) {
 	}
 }
 
+func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
+	store := &chatStore{
+		messages: []llm.Message{
+			llm.NewTextMessage(llm.RoleUser, "stored prompt"),
+			llm.NewTextMessage(llm.RoleAssistant, "stored answer"),
+		},
+	}
+	client := dummy.NewClient(dummy.Turn{TextChunks: []string{"fresh answer"}})
+	session, err := NewPersistentService(client, store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+
+	stream, err := session.Send(context.Background(), "fresh prompt", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	requests := client.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if len(requests[0].Messages) != 3 {
+		t.Fatalf("request messages = %#v, want stored user, stored assistant, fresh user", requests[0].Messages)
+	}
+	if requests[0].Messages[0].Text() != "stored prompt" || requests[0].Messages[1].Text() != "stored answer" || requests[0].Messages[2].Text() != "fresh prompt" {
+		t.Fatalf("request messages = %#v, want stored history before fresh prompt", requests[0].Messages)
+	}
+	if len(store.appended) != 1 {
+		t.Fatalf("append count = %d, want 1", len(store.appended))
+	}
+	if store.appended[0].conversationID != 42 || store.appended[0].user.Text() != "fresh prompt" || store.appended[0].assistant.Text() != "fresh answer" {
+		t.Fatalf("appended turn = %#v, want completed fresh turn in conversation 42", store.appended[0])
+	}
+}
+
+func TestPersistentSessionDoesNotAppendFailedOrAbortedTurn(t *testing.T) {
+	t.Run("failed stream", func(t *testing.T) {
+		store := &chatStore{}
+		session, err := NewPersistentService(failingClient{}, store).NewPersistedSession(context.Background(), 42)
+		if err != nil {
+			t.Fatalf("NewPersistedSession error = %v, want nil", err)
+		}
+		stream, err := session.Send(context.Background(), "hello", SendOptions{})
+		if err != nil {
+			t.Fatalf("Send() error = %v, want nil", err)
+		}
+
+		_, err = stream.Next()
+		if err == nil {
+			t.Fatalf("Next() error = nil, want failure")
+		}
+		if len(store.appended) != 0 {
+			t.Fatalf("append count = %d, want 0", len(store.appended))
+		}
+	})
+
+	t.Run("aborted stream", func(t *testing.T) {
+		store := &chatStore{}
+		session, err := NewPersistentService(eventClient{events: []llm.Event{{Type: llm.EventTextDelta, Delta: "partial"}}}, store).NewPersistedSession(context.Background(), 42)
+		if err != nil {
+			t.Fatalf("NewPersistedSession error = %v, want nil", err)
+		}
+		stream, err := session.Send(context.Background(), "hello", SendOptions{})
+		if err != nil {
+			t.Fatalf("Send() error = %v, want nil", err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("Close() error = %v, want nil", err)
+		}
+		if len(store.appended) != 0 {
+			t.Fatalf("append count = %d, want 0", len(store.appended))
+		}
+	})
+}
+
+func TestPersistentSessionReturnsAppendFailureAndDoesNotKeepInFlight(t *testing.T) {
+	store := &chatStore{appendErr: errors.New("append failed")}
+	session, err := NewPersistentService(dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}}), store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+	stream, err := session.Send(context.Background(), "hello", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	for {
+		_, err = stream.Next()
+		if err != nil {
+			break
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), "append failed") {
+		t.Fatalf("stream error = %v, want append failed", err)
+	}
+	retry, err := session.Send(context.Background(), "retry", SendOptions{})
+	if err != nil {
+		t.Fatalf("retry Send() error = %v, want nil", err)
+	}
+	if closeErr := retry.Close(); closeErr != nil {
+		t.Fatalf("retry Close() error = %v, want nil", closeErr)
+	}
+}
+
 func TestSessionSendIncludesRenderingInstructionsWithoutPersistingThem(t *testing.T) {
 	client := dummy.NewClient(
 		dummy.Turn{TextChunks: []string{"first answer"}},
@@ -541,6 +646,34 @@ func (s *eventStream) Next() (llm.Event, error) {
 }
 
 func (*eventStream) Close() error {
+	return nil
+}
+
+type chatStore struct {
+	messages  []llm.Message
+	appended  []appendedTurn
+	appendErr error
+}
+
+type appendedTurn struct {
+	conversationID int64
+	user           llm.Message
+	assistant      llm.Message
+}
+
+func (s *chatStore) Messages(context.Context, int64) ([]llm.Message, error) {
+	return llm.CloneMessages(s.messages), nil
+}
+
+func (s *chatStore) AppendTurn(_ context.Context, conversationID int64, user, assistant llm.Message) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
+	s.appended = append(s.appended, appendedTurn{
+		conversationID: conversationID,
+		user:           user.Clone(),
+		assistant:      assistant.Clone(),
+	})
 	return nil
 }
 

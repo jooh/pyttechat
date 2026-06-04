@@ -17,6 +17,8 @@ FAKE_RESPONSES_ADDR ?= 127.0.0.1:8080
 FAKE_RESPONSES_STREAM_DELAY ?= 150ms
 FAKE_RESPONSES_PID_FILE ?= $(CACHE_DIR)/fake-responses.pid
 FAKE_RESPONSES_LOG_FILE ?= $(CACHE_DIR)/fake-responses.log
+IMAGE ?= pyttechat:local
+CONTAINER_SMOKE_PORT ?= 3007
 
 GOCACHE ?= $(GO_BUILD_CACHE)
 GOMODCACHE ?= $(GO_MOD_CACHE)
@@ -49,7 +51,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'example.com/llm-chat-web/internal/buildinfo.Version=$(VERSION)' -X 'example.com/llm-chat-web/internal/buildinfo.Commit=$(COMMIT)' -X 'example.com/llm-chat-web/internal/buildinfo.Date=$(DATE)'
 
-.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit ci tools
+.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses image container-smoke serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit ci tools
 
 help:
 	@printf '%s\n' \
@@ -71,6 +73,8 @@ help:
 		'  deadcode      Run deadcode as an advisory check.' \
 		'  build         Build bin/pyttechat.' \
 		'  build-fake-responses Build bin/fake-responses.' \
+		'  image         Build the single-container image.' \
+		'  container-smoke Build and smoke test the container image.' \
 		'  serve-start   Start local web server in the background.' \
 		'  serve-stop    Stop local web server started by serve-start.' \
 		'  serve-status  Show local web server status.' \
@@ -184,6 +188,55 @@ build: cache-dirs
 build-fake-responses: cache-dirs
 	mkdir -p $(BUILD_DIR)
 	$(GO) build -trimpath -o $(BUILD_DIR)/fake-responses ./cmd/fake-responses
+
+image:
+	docker build -t "$(IMAGE)" .
+
+container-smoke: image
+	@set -eu; \
+	name="pyttechat-smoke-$$$$"; \
+	volume="pyttechat-smoke-$$$$"; \
+	cookies="$$(mktemp)"; \
+	body="$$(mktemp)"; \
+	cleanup() { \
+		docker rm -f "$$name" >/dev/null 2>&1 || true; \
+		docker volume rm "$$volume" >/dev/null 2>&1 || true; \
+		rm -f "$$cookies" "$$body"; \
+	}; \
+	trap cleanup EXIT; \
+	docker volume create "$$volume" >/dev/null; \
+	docker run -d --name "$$name" -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" "$(IMAGE)" >/dev/null; \
+	base="http://127.0.0.1:$(CONTAINER_SMOKE_PORT)"; \
+	for i in $$(seq 1 50); do \
+		if curl -fsS -c "$$cookies" -b "$$cookies" "$$base/register" >"$$body"; then break; fi; \
+		sleep 0.2; \
+	done; \
+	csrf=$$(sed -n 's/.*name="csrf-token" content="\([^"]*\)".*/\1/p' "$$body" | head -n1); \
+	test -n "$$csrf"; \
+	curl -fsSL -c "$$cookies" -b "$$cookies" \
+		--data-urlencode "csrf_token=$$csrf" \
+		--data-urlencode "username=smoke" \
+		--data-urlencode "password=correct horse" \
+		"$$base/register" >"$$body"; \
+	csrf=$$(sed -n 's/.*name="csrf-token" content="\([^"]*\)".*/\1/p' "$$body" | head -n1); \
+	test -n "$$csrf"; \
+	stream_url=$$(curl -fsS -c "$$cookies" -b "$$cookies" \
+		-H "Content-Type: application/json" \
+		-H "X-CSRF-Token: $$csrf" \
+		-d '{"prompt":"container smoke prompt"}' \
+		"$$base/chat/turns" | sed -n 's/.*"stream_url":"\([^"]*\)".*/\1/p'); \
+	test -n "$$stream_url"; \
+	curl -fsS -c "$$cookies" -b "$$cookies" "$$base$$stream_url" >"$$body"; \
+	grep -q 'dummy-response' "$$body"; \
+	docker rm -f "$$name" >/dev/null; \
+	docker run -d --name "$$name" -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" "$(IMAGE)" >/dev/null; \
+	for i in $$(seq 1 50); do \
+		if curl -fsS -c "$$cookies" -b "$$cookies" "$$base/" >"$$body"; then break; fi; \
+		sleep 0.2; \
+	done; \
+	grep -q 'container smoke prompt' "$$body"; \
+	grep -q 'This is a dummy LLM response.' "$$body"; \
+	printf '%s\n' 'container smoke passed'
 
 serve-start: build cache-dirs
 	@if [ -f "$(WEB_PID_FILE)" ]; then \

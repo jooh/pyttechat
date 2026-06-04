@@ -43,6 +43,19 @@
               <path d="M21 12.8A8 8 0 1 1 11.2 3 6.2 6.2 0 0 0 21 12.8z"></path>
             </svg>
           </button>
+          {{if .Username}}
+            <form class="logout-form" method="post" action="/logout">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button class="theme-toggle logout-button" type="submit" aria-label="Sign out">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                  <path d="m16 17 5-5-5-5"></path>
+                  <path d="M21 12H9"></path>
+                </svg>
+                <span class="sr-only">Sign out</span>
+              </button>
+            </form>
+          {{end}}
         </div>
       </header>
 
