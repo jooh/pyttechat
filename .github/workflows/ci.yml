@@ -1,4 +1,4 @@
-name: Smoke
+name: CI
 
 on:
   pull_request:
@@ -7,8 +7,8 @@ on:
       - main
 
 jobs:
-  container-smoke:
-    name: Container smoke
+  unit:
+    name: Unit
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -19,5 +19,5 @@ jobs:
         with:
           go-version: "1.26.4"
 
-      - name: Run container smoke test
-        run: make container-smoke
+      - name: Run unit CI
+        run: make ci

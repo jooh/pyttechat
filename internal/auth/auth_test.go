@@ -30,8 +30,8 @@ func TestRegisterNormalizesHashesAndRejectsDuplicates(t *testing.T) {
 	if string(user.PasswordHash) == "correct horse" {
 		t.Fatalf("password hash stores raw password")
 	}
-	if err := bcrypt.CompareHashAndPassword(user.PasswordHash, []byte("correct horse")); err != nil {
-		t.Fatalf("stored password hash does not verify: %v", err)
+	if hashErr := bcrypt.CompareHashAndPassword(user.PasswordHash, []byte("correct horse")); hashErr != nil {
+		t.Fatalf("stored password hash does not verify: %v", hashErr)
 	}
 
 	stored, err := store.UserByUsername(ctx, "alice-1")
@@ -109,8 +109,8 @@ func TestBrowserSessionsRotateVerifyExpireAndLogout(t *testing.T) {
 	if anonymous.Session.Authenticated() {
 		t.Fatalf("anonymous session is authenticated")
 	}
-	if _, err := service.VerifyBrowserSession(ctx, anonymous.CookieValue); err != nil {
-		t.Fatalf("VerifyBrowserSession anonymous error = %v, want nil", err)
+	if _, verifyErr := service.VerifyBrowserSession(ctx, anonymous.CookieValue); verifyErr != nil {
+		t.Fatalf("VerifyBrowserSession anonymous error = %v, want nil", verifyErr)
 	}
 
 	rotated, err := service.RotateBrowserSession(ctx, anonymous.Session.ID, user.ID)
@@ -120,8 +120,8 @@ func TestBrowserSessionsRotateVerifyExpireAndLogout(t *testing.T) {
 	if rotated.CookieValue == anonymous.CookieValue || rotated.Session.ID == anonymous.Session.ID {
 		t.Fatalf("rotated session did not change ID and secret")
 	}
-	if _, err := store.SessionByID(ctx, anonymous.Session.ID); !errors.Is(err, storage.ErrNotFound) {
-		t.Fatalf("old SessionByID error = %v, want ErrNotFound", err)
+	if _, lookupErr := store.SessionByID(ctx, anonymous.Session.ID); !errors.Is(lookupErr, storage.ErrNotFound) {
+		t.Fatalf("old SessionByID error = %v, want ErrNotFound", lookupErr)
 	}
 
 	verified, err := service.VerifyBrowserSession(ctx, rotated.CookieValue)

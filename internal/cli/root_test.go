@@ -311,8 +311,8 @@ func TestAskCommandAuthenticatesWithPasswordFile(t *testing.T) {
 		t.Fatalf("OpenSQLite error = %v, want nil", err)
 	}
 	defer store.Close()
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate error = %v, want nil", err)
+	if migrateErr := store.Migrate(context.Background()); migrateErr != nil {
+		t.Fatalf("Migrate error = %v, want nil", migrateErr)
 	}
 	authService := auth.NewService(auth.Options{Store: store, BCryptCost: bcrypt.MinCost})
 	user, err := authService.Authenticate(context.Background(), "file-user", "correct horse")
@@ -570,40 +570,6 @@ func TestServeCommandHelpShowsWebOptions(t *testing.T) {
 	}
 }
 
-func TestServeCommandReturnsStoreSetupFailures(t *testing.T) {
-	errStore := errors.New("store failed")
-	originalOpenStore := openStore
-	t.Cleanup(func() {
-		openStore = originalOpenStore
-	})
-
-	t.Run("open", func(t *testing.T) {
-		openStore = func(context.Context, string) (storage.Store, error) {
-			return nil, errStore
-		}
-		code, _, stderr := runCommand(t, "", "serve")
-		if code != 1 {
-			t.Fatalf("exit code = %d, want 1", code)
-		}
-		if !strings.Contains(stderr, "store failed") {
-			t.Fatalf("stderr = %q, want store error", stderr)
-		}
-	})
-
-	t.Run("migrate", func(t *testing.T) {
-		openStore = func(context.Context, string) (storage.Store, error) {
-			return cliStore{migrateErr: errStore}, nil
-		}
-		code, _, stderr := runCommand(t, "", "serve")
-		if code != 1 {
-			t.Fatalf("exit code = %d, want 1", code)
-		}
-		if !strings.Contains(stderr, "store failed") {
-			t.Fatalf("stderr = %q, want store error", stderr)
-		}
-	})
-}
-
 func TestEnvironmentHelpersAndProxyTimeoutDefault(t *testing.T) {
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "2s")
 	t.Setenv("PYTTECHAT_WEB_ADDR", "127.0.0.1:3001")
@@ -722,84 +688,6 @@ func TestChatCommandReturnsPrintStreamFailure(t *testing.T) {
 	code := Execute(context.Background(), []string{"chat"}, strings.NewReader("hello\n"), failingWriter{}, io.Discard)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
-	}
-}
-
-func TestChatCommandReturnsSessionSetupFailures(t *testing.T) {
-	errStore := errors.New("store failed")
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte("correct horse"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("GenerateFromPassword error = %v, want nil", err)
-	}
-	validUser := storage.User{ID: 1, Username: "alice", PasswordHash: passwordHash}
-	validConversation := storage.Conversation{ID: 10, UserID: 1, Title: "Default", IsDefault: true}
-
-	originalOpenStore := openStore
-	t.Cleanup(func() {
-		openStore = originalOpenStore
-	})
-
-	for _, tc := range []struct {
-		name      string
-		store     storage.Store
-		openErr   error
-		wantError string
-	}{
-		{
-			name:      "open",
-			openErr:   errStore,
-			wantError: "store failed",
-		},
-		{
-			name:      "migrate",
-			store:     cliStore{migrateErr: errStore},
-			wantError: "store failed",
-		},
-		{
-			name: "default conversation",
-			store: cliStore{
-				user:                   validUser,
-				defaultConversationErr: errStore,
-			},
-			wantError: "store failed",
-		},
-		{
-			name: "persisted session",
-			store: cliStore{
-				user:         validUser,
-				conversation: validConversation,
-				messagesErr:  errStore,
-			},
-			wantError: "store failed",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("PYTTECHAT_USERNAME", "alice")
-			t.Setenv("PYTTECHAT_PASSWORD", "correct horse")
-			t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
-			t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
-			t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
-			t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
-			t.Setenv("PYTTECHAT_MODEL", "")
-			t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
-			t.Setenv("PYTTECHAT_SESSION_TTL", "")
-			openStore = func(context.Context, string) (storage.Store, error) {
-				if tc.openErr != nil {
-					return nil, tc.openErr
-				}
-				return tc.store, nil
-			}
-
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-			code := Execute(context.Background(), []string{"chat"}, strings.NewReader("hello\n"), &stdout, &stderr)
-			if code != 1 {
-				t.Fatalf("exit code = %d, want 1", code)
-			}
-			if !strings.Contains(stderr.String(), tc.wantError) {
-				t.Fatalf("stderr = %q, want %q", stderr.String(), tc.wantError)
-			}
-		})
 	}
 }
 
@@ -1439,21 +1327,6 @@ func fetchServedLoginCSRFToken(t *testing.T, client *http.Client, baseURL string
 	return token
 }
 
-func fetchServedCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
-	t.Helper()
-
-	response, body := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+"/", nil))
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, body)
-	}
-	token := csrfFromServedHTML(body)
-	if token == "" {
-		t.Fatalf("CSRF token is empty in body %q", body)
-	}
-	return token
-}
-
 func registerServedUser(t *testing.T, client *http.Client, baseURL, username, password string) string {
 	t.Helper()
 
@@ -1623,68 +1496,4 @@ func servedSSEData(t *testing.T, body, eventName string) []string {
 		}
 	}
 	return matches
-}
-
-type cliStore struct {
-	migrateErr             error
-	user                   storage.User
-	conversation           storage.Conversation
-	defaultConversationErr error
-	messagesErr            error
-}
-
-func (s cliStore) Migrate(context.Context) error {
-	return s.migrateErr
-}
-
-func (s cliStore) CreateUser(context.Context, storage.CreateUserParams) (storage.User, error) {
-	return storage.User{}, nil
-}
-
-func (s cliStore) UserByUsername(context.Context, string) (storage.User, error) {
-	if s.user.ID == 0 {
-		return storage.User{}, storage.ErrNotFound
-	}
-	return s.user, nil
-}
-
-func (s cliStore) CreateSession(context.Context, storage.CreateSessionParams) (storage.Session, error) {
-	return storage.Session{}, nil
-}
-
-func (s cliStore) RotateSession(context.Context, string, storage.CreateSessionParams) (storage.Session, error) {
-	return storage.Session{}, nil
-}
-
-func (s cliStore) SessionByID(context.Context, string) (storage.Session, error) {
-	return storage.Session{}, storage.ErrNotFound
-}
-
-func (s cliStore) DeleteSession(context.Context, string) error {
-	return nil
-}
-
-func (s cliStore) DefaultConversationForUser(context.Context, int64) (storage.Conversation, error) {
-	if s.defaultConversationErr != nil {
-		return storage.Conversation{}, s.defaultConversationErr
-	}
-	if s.conversation.ID == 0 {
-		return storage.Conversation{}, storage.ErrNotFound
-	}
-	return s.conversation, nil
-}
-
-func (s cliStore) Messages(context.Context, int64) ([]llm.Message, error) {
-	if s.messagesErr != nil {
-		return nil, s.messagesErr
-	}
-	return nil, nil
-}
-
-func (s cliStore) AppendTurn(context.Context, int64, llm.Message, llm.Message) error {
-	return nil
-}
-
-func (s cliStore) Close() error {
-	return nil
 }

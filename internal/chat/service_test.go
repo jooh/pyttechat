@@ -580,14 +580,20 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 		userMessage: llm.NewTextMessage(llm.RoleUser, "hello"),
 	}
 
-	turn.finalize()
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("finalize before completion error = %v, want nil", err)
+	}
 	if got := len(session.Messages()); got != 0 {
 		t.Fatalf("messages before completion = %d, want 0", got)
 	}
 
 	turn.completed = true
-	turn.finalize()
-	turn.finalize()
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("finalize after completion error = %v, want nil", err)
+	}
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("second finalize error = %v, want nil", err)
+	}
 	if got := len(session.Messages()); got != 2 {
 		t.Fatalf("messages after double finalize = %d, want exactly 2", got)
 	}

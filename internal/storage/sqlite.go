@@ -18,11 +18,6 @@ import (
 
 const DefaultDatabaseURL = "sqlite://./.cache/pyttechat/pyttechat.db"
 
-var (
-	sqliteDriverName = "sqlite"
-	sqliteOpen       = sql.Open
-)
-
 type SQLite struct {
 	db *sql.DB
 }
@@ -32,19 +27,20 @@ func OpenSQLite(ctx context.Context, databaseURL string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureSQLiteDir(dsn); err != nil {
-		return nil, err
+	if dirErr := ensureSQLiteDir(dsn); dirErr != nil {
+		return nil, dirErr
 	}
-	db, err := sqliteOpen(sqliteDriverName, dsn)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLite{db: db}
-	if _, err := db.ExecContext(ctx, `
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
-`); err != nil {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -211,8 +207,8 @@ func (s *SQLite) RotateSession(ctx context.Context, oldSessionID string, params 
 	defer rollback(tx)
 
 	if strings.TrimSpace(oldSessionID) != "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE id = ?`, oldSessionID); err != nil {
-			return Session{}, err
+		if _, deleteErr := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE id = ?`, oldSessionID); deleteErr != nil {
+			return Session{}, deleteErr
 		}
 	}
 	session, err := s.createSession(ctx, tx, params)
@@ -308,8 +304,8 @@ func (s *SQLite) DefaultConversationForUser(ctx context.Context, userID int64) (
 
 	conversation, err := conversationByDefault(ctx, tx, userID)
 	if err == nil {
-		if err := tx.Commit(); err != nil {
-			return Conversation{}, err
+		if commitErr := tx.Commit(); commitErr != nil {
+			return Conversation{}, commitErr
 		}
 		return conversation, nil
 	}
@@ -406,8 +402,14 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
 		return ErrInvalidArgument
 	}
-	userParts, _ := json.Marshal(userMessage.Parts)
-	assistantParts, _ := json.Marshal(assistantMessage.Parts)
+	userParts, err := json.Marshal(userMessage.Parts)
+	if err != nil {
+		return err
+	}
+	assistantParts, err := json.Marshal(assistantMessage.Parts)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

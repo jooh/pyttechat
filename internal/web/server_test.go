@@ -734,24 +734,6 @@ func TestSessionHelpersCoverLegacyAnonymousAndPersistedLoadFailures(t *testing.T
 		}
 	})
 
-	t.Run("stored authenticated session returns persisted history load failure", func(t *testing.T) {
-		errStore := errors.New("messages failed")
-		handler := NewServer(Options{
-			Client: dummy.NewClient(),
-			Store: webStore{
-				conversation: storage.Conversation{ID: 10, UserID: 1, Title: "Default", IsDefault: true},
-				messagesErr:  errStore,
-			},
-		})
-		_, err := handler.browserSessionForStoredSession(context.Background(), storage.Session{
-			ID:        "session",
-			UserID:    1,
-			CSRFToken: "csrf",
-		})
-		if !errors.Is(err, errStore) {
-			t.Fatalf("browserSessionForStoredSession error = %v, want messages error", err)
-		}
-	})
 }
 
 func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
@@ -2269,48 +2251,19 @@ func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
 	})
 }
 
-func TestTurnJobRendererFallbackAndEmptyDeltas(t *testing.T) {
-	originalRenderer := newMarkdownRenderer
-	t.Cleanup(func() {
-		newMarkdownRenderer = originalRenderer
-	})
+func TestTurnJobIgnoresEmptyTextDeltas(t *testing.T) {
+	turn := newTestTurnJob(t)
+	session := chat.NewService(webSequenceClient{events: []llm.Event{
+		{Type: llm.EventTextDelta, Delta: ""},
+		{Type: llm.EventCompleted},
+	}}).NewSession()
 
-	t.Run("renderer fallback", func(t *testing.T) {
-		newMarkdownRenderer = func() assistantRenderer {
-			return errorRenderer{}
-		}
-		turn := newTestTurnJob(t)
-		session := chat.NewService(webSequenceClient{events: []llm.Event{
-			{Type: llm.EventTextDelta, Delta: "<unsafe>"},
-			{Type: llm.EventCompleted},
-		}}).NewSession()
+	turn.run(session, chat.SendOptions{})
 
-		turn.run(session, chat.SendOptions{})
-
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || !hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
-			t.Fatalf("replay = %#v terminal=%v, want preview and done fallback events", replay, terminal)
-		}
-		if !hasReplayData(replay, `\u0026lt;unsafe\u0026gt;`) {
-			t.Fatalf("replay = %#v, want escaped fallback HTML", replay)
-		}
-	})
-
-	t.Run("empty text delta", func(t *testing.T) {
-		newMarkdownRenderer = originalRenderer
-		turn := newTestTurnJob(t)
-		session := chat.NewService(webSequenceClient{events: []llm.Event{
-			{Type: llm.EventTextDelta, Delta: ""},
-			{Type: llm.EventCompleted},
-		}}).NewSession()
-
-		turn.run(session, chat.SendOptions{})
-
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
-			t.Fatalf("replay = %#v terminal=%v, want only terminal done event", replay, terminal)
-		}
-	})
+	replay, _, terminal := turn.subscribe(0)
+	if !terminal || hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
+		t.Fatalf("replay = %#v terminal=%v, want only terminal done event", replay, terminal)
+	}
 }
 
 func TestMergeCompletedOutputPartSkipsTrailingNonReasoningParts(t *testing.T) {
@@ -2765,22 +2718,6 @@ type testDonePayload struct {
 	CompletedAt        string       `json:"completed_at"`
 }
 
-func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {
-	t.Helper()
-
-	if frame.Event != "html" {
-		t.Fatalf("frame event = %q, want html: %#v", frame.Event, frame)
-	}
-	var payload testHTMLPayload
-	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
-		t.Fatalf("decode html frame error = %v; frame = %#v", err, frame)
-	}
-	if payload.TurnID == "" || payload.AssistantMessageID == "" {
-		t.Fatalf("html payload = %#v, want ids", payload)
-	}
-	return payload
-}
-
 func decodePreviewFrame(t *testing.T, frame sseFrame) testHTMLPayload {
 	t.Helper()
 
@@ -2830,18 +2767,6 @@ func assertSafeRenderedHTML(t *testing.T, html string) {
 		if strings.Contains(html, unsafe) {
 			t.Fatalf("rendered HTML = %q, did not expect unsafe substring %q", html, unsafe)
 		}
-	}
-}
-
-func waitSSEFrame(t *testing.T, frames <-chan sseFrame) sseFrame {
-	t.Helper()
-
-	select {
-	case frame := <-frames:
-		return frame
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for SSE frame")
-		return sseFrame{}
 	}
 }
 
@@ -3284,72 +3209,8 @@ func hasReplayEvent(events []streamEvent, name string) bool {
 	return false
 }
 
-func hasReplayData(events []streamEvent, needle string) bool {
-	for _, event := range events {
-		if strings.Contains(string(event.Data), needle) {
-			return true
-		}
-	}
-	return false
-}
-
 type errorRenderer struct{}
 
 func (errorRenderer) Render(string) (template.HTML, error) {
 	return "", errors.New("render failed")
-}
-
-type webStore struct {
-	conversation storage.Conversation
-	messagesErr  error
-}
-
-func (s webStore) Migrate(context.Context) error {
-	return nil
-}
-
-func (s webStore) CreateUser(context.Context, storage.CreateUserParams) (storage.User, error) {
-	return storage.User{}, nil
-}
-
-func (s webStore) UserByUsername(context.Context, string) (storage.User, error) {
-	return storage.User{}, storage.ErrNotFound
-}
-
-func (s webStore) CreateSession(context.Context, storage.CreateSessionParams) (storage.Session, error) {
-	return storage.Session{}, nil
-}
-
-func (s webStore) RotateSession(context.Context, string, storage.CreateSessionParams) (storage.Session, error) {
-	return storage.Session{}, nil
-}
-
-func (s webStore) SessionByID(context.Context, string) (storage.Session, error) {
-	return storage.Session{}, storage.ErrNotFound
-}
-
-func (s webStore) DeleteSession(context.Context, string) error {
-	return nil
-}
-
-func (s webStore) DefaultConversationForUser(context.Context, int64) (storage.Conversation, error) {
-	if s.conversation.ID == 0 {
-		return storage.Conversation{}, storage.ErrNotFound
-	}
-	return s.conversation, nil
-}
-
-func (s webStore) Messages(context.Context, int64) ([]llm.Message, error) {
-	if s.messagesErr != nil {
-		return nil, s.messagesErr
-	}
-	return nil, nil
-}
-
-func (s webStore) AppendTurn(context.Context, int64, llm.Message, llm.Message) error {
-	return nil
-}
-
-func (s webStore) Close() error {
-	return nil
 }

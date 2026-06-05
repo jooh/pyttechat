@@ -43,6 +43,7 @@ func (r *Renderer) Render(markdown string) (template.HTML, error) {
 	}
 	out = decorateCitations(out)
 	out = r.sanitizer.Sanitize(out)
+	// #nosec G203 -- renderer output is sanitized by bluemonday before being trusted by html/template.
 	return template.HTML(out), nil
 }
 

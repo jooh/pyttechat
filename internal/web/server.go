@@ -36,7 +36,6 @@ var embeddedFiles embed.FS
 
 var randomReader io.Reader = rand.Reader
 var timeNow = func() time.Time { return time.Now().UTC() }
-var newMarkdownRenderer = func() assistantRenderer { return markdown.NewRenderer() }
 
 type assistantRenderer interface {
 	Render(string) (template.HTML, error)
@@ -81,7 +80,7 @@ type browserSession struct {
 
 func NewServer(opts Options) *Server {
 	assets, _ := fs.Sub(embeddedFiles, "assets")
-	renderer := newMarkdownRenderer()
+	renderer := markdown.NewRenderer()
 	tmpl := template.Must(template.ParseFS(embeddedFiles, "templates/*.html"))
 	return &Server{
 		client:          opts.Client,
@@ -200,7 +199,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 	session.turns[turn.id] = turn
 	session.mu.Unlock()
 
-	go turn.run(session.chat, chat.SendOptions{
+	go turn.run(session.chat, chat.SendOptions{ //nolint:contextcheck // turn jobs use their own cancelable context and outlive the request.
 		Model:                 s.model,
 		ReasoningEffort:       s.reasoningEffort,
 		RenderingInstructions: chat.WebRenderingInstructions(),
@@ -358,7 +357,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if parseErr := r.ParseForm(); parseErr != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -429,7 +428,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if parseErr := r.ParseForm(); parseErr != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -650,6 +649,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, value string, expires t
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	// #nosec G124 -- CookieSecure is configurable so local HTTP development can clear cookies; production should enable it.
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -806,6 +806,7 @@ func renderAssistantBody(parts []llm.Part, renderer assistantRenderer) (template
 			out.WriteString(renderAttachmentPart(part))
 		}
 	}
+	// #nosec G203 -- message parts are sanitized by the markdown renderer or escaped by typed part renderers.
 	return template.HTML(out.String()), nil
 }
 
@@ -1058,7 +1059,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 	}
 	defer stream.Close()
 
-	renderer := newMarkdownRenderer()
+	renderer := markdown.NewRenderer()
 	var fullMarkdown strings.Builder
 	var assistantParts []llm.Part
 	completed := false
@@ -1172,6 +1173,7 @@ func escapedPlainTextHTML(text string) template.HTML {
 	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
 	escaped = strings.ReplaceAll(escaped, "\r", "\n")
 	escaped = strings.ReplaceAll(escaped, "\n", "<br>\n")
+	// #nosec G203 -- text is escaped before adding trusted line break markup.
 	return template.HTML(escaped)
 }
 

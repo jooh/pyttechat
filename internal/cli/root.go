@@ -63,9 +63,6 @@ var (
 		return cmd.Help()
 	}
 	printUsage = printUsageToError
-	openStore  = func(ctx context.Context, databaseURL string) (storage.Store, error) {
-		return storage.OpenSQLite(ctx, databaseURL)
-	}
 )
 
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
@@ -126,13 +123,13 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			store, err := openStore(ctx, opts.databaseURL)
+			store, err := storage.OpenSQLite(ctx, opts.databaseURL)
 			if err != nil {
 				return err
 			}
 			defer store.Close()
-			if err := store.Migrate(ctx); err != nil {
-				return err
+			if migrateErr := store.Migrate(ctx); migrateErr != nil {
+				return migrateErr
 			}
 			authService := auth.NewService(auth.Options{
 				Store:      store,
@@ -269,16 +266,16 @@ func newCLIChatSession(ctx context.Context, opts rootOptions) (*chat.Session, fu
 	if err != nil {
 		return nil, func() {}, err
 	}
-	store, err := openStore(ctx, opts.databaseURL)
+	store, err := storage.OpenSQLite(ctx, opts.databaseURL)
 	if err != nil {
 		return nil, func() {}, err
 	}
 	closeStore := func() {
 		_ = store.Close()
 	}
-	if err := store.Migrate(ctx); err != nil {
+	if migrateErr := store.Migrate(ctx); migrateErr != nil {
 		closeStore()
-		return nil, func() {}, err
+		return nil, func() {}, migrateErr
 	}
 	authService := auth.NewService(auth.Options{
 		Store:      store,
