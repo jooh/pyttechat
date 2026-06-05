@@ -8,24 +8,29 @@ The current scaffold has a tiny deterministic unit test and local build/test too
 - `make imports-check`
 - `make tidy-check`
 - `make vet`
-- `make lint`
+- `make lint-fast`
 - `make test`
 - `make test-race`
-- `make coverage` enforces at least 90.0% total statement coverage across this module's Go packages.
+- `make coverage` enforces at least 95.0% total statement coverage across this module's Go packages.
+- `make build`
+- `make all-tests`
+
+Broader PR-quality checks also include:
+
+- `make lint`
 - `make vuln`
 - `make security`
 - `make deadcode`
-- `make build`
 - `make ci`
 
 `make deadcode` is advisory during the scaffold phase because placeholder code can produce noisy findings. It should become strict once the app has a stable shape.
 
 Project quality gates are scoped to this module's own Go packages. The reference submodules under `.agent/skills/references/*/repo` are read-only design references and are not part of lint, security, vulnerability, or deadcode enforcement.
 
-Override the local minimum only when intentionally testing the gate or tightening it:
+Override the local minimum only when intentionally testing the gate:
 
 ```sh
-COVERAGE_MIN=95.0 make coverage
+COVERAGE_MIN=90.0 make coverage
 ```
 
 ## Future Test Coverage

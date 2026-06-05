@@ -120,7 +120,13 @@ The pre-commit checks are intentionally fast: formatting, module tidiness, fast 
 
 ## Local CI
 
-Run the PR-quality checks locally:
+Run the commit-gating checks locally:
+
+```sh
+make all-tests
+```
+
+Run the broader PR-quality checks locally:
 
 ```sh
 make ci

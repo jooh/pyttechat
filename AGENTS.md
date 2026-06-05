@@ -50,6 +50,7 @@ Reference repositories live under `.agent/skills/references/*/repo` as skill-bac
 
 - if on `main`, check out a feature branch with a suitable name before starting work
 - if already on a feature branch, keep committing to that branch
+- Run `make all-tests` before committing repository changes. If it cannot pass, report the failing target and why before committing.
 - When a turn changes repository files, end the turn by committing the agent's changes unless explicitly instructed otherwise. Keep unrelated user changes out of the commit.
 
 ## Coding Standards

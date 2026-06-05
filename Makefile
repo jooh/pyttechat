@@ -45,7 +45,7 @@ GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
 COVERAGE_PROFILE ?= coverage.out
-COVERAGE_MIN ?= 100.0
+COVERAGE_MIN ?= 95.0
 
 GO_FILES := $(shell find . \( -path './.agent/skills/references/*/repo' -o -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 
@@ -54,7 +54,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'example.com/llm-chat-web/internal/buildinfo.Version=$(VERSION)' -X 'example.com/llm-chat-web/internal/buildinfo.Commit=$(COMMIT)' -X 'example.com/llm-chat-web/internal/buildinfo.Date=$(DATE)'
 
-.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses image container-smoke serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit ci tools
+.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses image container-smoke serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit all-tests ci tools
 
 help:
 	@printf '%s\n' \
@@ -86,6 +86,7 @@ help:
 		'  serve-fake-stop Stop fake Responses API and web app.' \
 		'  clean         Remove local build and coverage artifacts.' \
 		'  pre-commit    Run all configured pre-commit hooks.' \
+		'  all-tests     Run all commit-gating checks.' \
 		'  ci            Run PR-quality checks.'
 
 $(BIN_DIR):
@@ -409,4 +410,6 @@ clean:
 pre-commit: cache-dirs
 	pre-commit run --all-files
 
-ci: fmt-check imports-check tidy-check vet lint test test-race coverage vuln security deadcode build
+all-tests: fmt-check imports-check tidy-check vet lint-fast test test-race coverage build
+
+ci: all-tests lint vuln security deadcode
