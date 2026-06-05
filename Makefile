@@ -19,6 +19,9 @@ FAKE_RESPONSES_PID_FILE ?= $(CACHE_DIR)/fake-responses.pid
 FAKE_RESPONSES_LOG_FILE ?= $(CACHE_DIR)/fake-responses.log
 IMAGE ?= pyttechat:local
 CONTAINER_SMOKE_PORT ?= 3007
+CONTAINER_SMOKE_FAKE_PORT ?= 8087
+CONTAINER_SMOKE_FAKE_ADDR ?= 0.0.0.0:$(CONTAINER_SMOKE_FAKE_PORT)
+CONTAINER_SMOKE_PROXY_URL ?= http://host.docker.internal:$(CONTAINER_SMOKE_FAKE_PORT)
 
 GOCACHE ?= $(GO_BUILD_CACHE)
 GOMODCACHE ?= $(GO_MOD_CACHE)
@@ -192,20 +195,34 @@ build-fake-responses: cache-dirs
 image:
 	docker build -t "$(IMAGE)" .
 
-container-smoke: image
+container-smoke: image build-fake-responses
 	@set -eu; \
 	name="pyttechat-smoke-$$$$"; \
 	volume="pyttechat-smoke-$$$$"; \
 	cookies="$$(mktemp)"; \
 	body="$$(mktemp)"; \
+	fake_log="$$(mktemp)"; \
+	fake_pid=""; \
 	cleanup() { \
 		docker rm -f "$$name" >/dev/null 2>&1 || true; \
 		docker volume rm "$$volume" >/dev/null 2>&1 || true; \
-		rm -f "$$cookies" "$$body"; \
+		if [ -n "$$fake_pid" ]; then \
+			kill "$$fake_pid" >/dev/null 2>&1 || true; \
+			wait "$$fake_pid" >/dev/null 2>&1 || true; \
+		fi; \
+		rm -f "$$cookies" "$$body" "$$fake_log"; \
 	}; \
 	trap cleanup EXIT; \
+	"$(BUILD_DIR)/fake-responses" --addr "$(CONTAINER_SMOKE_FAKE_ADDR)" --stream-delay 0s >"$$fake_log" 2>&1 & \
+	fake_pid=$$!; \
+	sleep 1; \
+	if ! kill -0 "$$fake_pid" 2>/dev/null; then \
+		printf '%s\n' 'fake Responses API failed to start'; \
+		cat "$$fake_log"; \
+		exit 1; \
+	fi; \
 	docker volume create "$$volume" >/dev/null; \
-	docker run -d --name "$$name" -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" "$(IMAGE)" >/dev/null; \
+	docker run -d --name "$$name" --add-host=host.docker.internal:host-gateway -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" -e "PYTTECHAT_LLM_PROXY_URL=$(CONTAINER_SMOKE_PROXY_URL)" "$(IMAGE)" >/dev/null; \
 	base="http://127.0.0.1:$(CONTAINER_SMOKE_PORT)"; \
 	for i in $$(seq 1 50); do \
 		if curl -fsS -c "$$cookies" -b "$$cookies" "$$base/register" >"$$body"; then break; fi; \
@@ -227,15 +244,15 @@ container-smoke: image
 		"$$base/chat/turns" | sed -n 's/.*"stream_url":"\([^"]*\)".*/\1/p'); \
 	test -n "$$stream_url"; \
 	curl -fsS -c "$$cookies" -b "$$cookies" "$$base$$stream_url" >"$$body"; \
-	grep -q 'dummy-response' "$$body"; \
+	grep -q 'Echo: container smoke prompt' "$$body"; \
 	docker rm -f "$$name" >/dev/null; \
-	docker run -d --name "$$name" -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" "$(IMAGE)" >/dev/null; \
+	docker run -d --name "$$name" --add-host=host.docker.internal:host-gateway -p "127.0.0.1:$(CONTAINER_SMOKE_PORT):3000" -v "$$volume:/var/lib/pyttechat" -e "PYTTECHAT_LLM_PROXY_URL=$(CONTAINER_SMOKE_PROXY_URL)" "$(IMAGE)" >/dev/null; \
 	for i in $$(seq 1 50); do \
 		if curl -fsS -c "$$cookies" -b "$$cookies" "$$base/" >"$$body"; then break; fi; \
 		sleep 0.2; \
 	done; \
 	grep -q 'container smoke prompt' "$$body"; \
-	grep -q 'This is a dummy LLM response.' "$$body"; \
+	grep -q 'Echo: container smoke prompt' "$$body"; \
 	printf '%s\n' 'container smoke passed'
 
 serve-start: build cache-dirs

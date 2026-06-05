@@ -7,6 +7,11 @@ default_permissions = "local-web-dev-broad"
 description = "Workspace write access with broad local/private network access for local web development."
 extends = ":workspace"
 
+[permissions.local-web-dev-broad.filesystem.":workspace_roots"]
+"." = "write"
+"**/.env" = "deny"
+"**/.env.*" = "deny"
+
 [permissions.local-web-dev-broad.network]
 enabled = true
 allow_local_binding = true

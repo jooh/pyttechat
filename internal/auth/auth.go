@@ -52,6 +52,17 @@ type BrowserSession struct {
 	Session     storage.Session
 }
 
+type WebService interface {
+	Register(context.Context, string, string) (storage.User, error)
+	Authenticate(context.Context, string, string) (storage.User, error)
+	CreateAnonymousBrowserSession(context.Context) (BrowserSession, error)
+	RotateBrowserSession(context.Context, string, int64) (BrowserSession, error)
+	VerifyBrowserSession(context.Context, string) (storage.Session, error)
+	Logout(context.Context, string) error
+}
+
+var _ WebService = (*Service)(nil)
+
 func NewService(opts Options) *Service {
 	randomReader := opts.Random
 	if randomReader == nil {

@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -275,6 +276,114 @@ func TestAskAndChatUsePersistedAuthenticatedDefaultConversation(t *testing.T) {
 	}
 }
 
+func TestAskCommandAuthenticatesWithPasswordFile(t *testing.T) {
+	databaseURL := createCLIAuthUser(t, "file-user", "correct horse")
+	passwordFile := filepath.Join(t.TempDir(), "password.txt")
+	if err := os.WriteFile(passwordFile, []byte("correct horse\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile password error = %v, want nil", err)
+	}
+
+	t.Setenv("PYTTECHAT_DATABASE_URL", databaseURL)
+	t.Setenv("PYTTECHAT_USERNAME", "file-user")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", passwordFile)
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "from file"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != "This is a dummy LLM response.\n" {
+		t.Fatalf("stdout = %q, want dummy response", stdout.String())
+	}
+
+	store, err := storage.OpenSQLite(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("OpenSQLite error = %v, want nil", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate error = %v, want nil", err)
+	}
+	authService := auth.NewService(auth.Options{Store: store, BCryptCost: bcrypt.MinCost})
+	user, err := authService.Authenticate(context.Background(), "file-user", "correct horse")
+	if err != nil {
+		t.Fatalf("Authenticate stored user error = %v, want nil", err)
+	}
+	conversation, err := store.DefaultConversationForUser(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
+	}
+	messages, err := store.Messages(context.Background(), conversation.ID)
+	if err != nil {
+		t.Fatalf("Messages error = %v, want nil", err)
+	}
+	if len(messages) != 2 || messages[0].Text() != "from file" || messages[1].Text() != "This is a dummy LLM response." {
+		t.Fatalf("messages = %#v, want persisted password-file ask turn", messages)
+	}
+}
+
+func TestAskCommandRequiresPasswordWhenUsernameIsSet(t *testing.T) {
+	databaseURL := createCLIAuthUser(t, "missing-password-user", "correct horse")
+	t.Setenv("PYTTECHAT_DATABASE_URL", databaseURL)
+	t.Setenv("PYTTECHAT_USERNAME", "missing-password-user")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "hello"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "PYTTECHAT_PASSWORD or PYTTECHAT_PASSWORD_FILE is required") {
+		t.Fatalf("stderr = %q, want missing password error", stderr.String())
+	}
+}
+
+func TestAskCommandRejectsInvalidCLIAuthCredentials(t *testing.T) {
+	databaseURL := createCLIAuthUser(t, "wrong-password-user", "correct horse")
+	t.Setenv("PYTTECHAT_DATABASE_URL", databaseURL)
+	t.Setenv("PYTTECHAT_USERNAME", "wrong-password-user")
+	t.Setenv("PYTTECHAT_PASSWORD", "wrong password")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_WEB_ADDR", "")
+	t.Setenv("PYTTECHAT_SECURE_COOKIES", "")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "hello"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid credentials") {
+		t.Fatalf("stderr = %q, want invalid credentials", stderr.String())
+	}
+}
+
 func TestAskCommandSendsRenderingInstructionsToProxy(t *testing.T) {
 	var requestBody map[string]any
 	handler := fakeprovider.NewHandler()
@@ -465,11 +574,30 @@ func TestEnvironmentHelpersAndProxyTimeoutDefault(t *testing.T) {
 	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "2s")
 	t.Setenv("PYTTECHAT_WEB_ADDR", "127.0.0.1:3001")
 	t.Setenv("PYTTECHAT_SECURE_COOKIES", "yes")
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite:///tmp/pyttechat-test.db")
+	t.Setenv("PYTTECHAT_REGISTRATION_ENABLED", "off")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "2h")
 
 	command := NewRootCommand(strings.NewReader(""), io.Discard, io.Discard)
 	timeoutFlag := command.PersistentFlags().Lookup("proxy-timeout")
 	if timeoutFlag == nil || timeoutFlag.DefValue != "2s" {
 		t.Fatalf("proxy-timeout default = %#v, want 2s", timeoutFlag)
+	}
+	databaseFlag := command.PersistentFlags().Lookup("database-url")
+	if databaseFlag == nil || databaseFlag.DefValue != "sqlite:///tmp/pyttechat-test.db" {
+		t.Fatalf("database-url default = %#v, want env database URL", databaseFlag)
+	}
+	sessionTTLFlag := command.PersistentFlags().Lookup("session-ttl")
+	if sessionTTLFlag == nil || sessionTTLFlag.DefValue != "2h0m0s" {
+		t.Fatalf("session-ttl default = %#v, want 2h", sessionTTLFlag)
+	}
+	serveCommand, _, err := command.Find([]string{"serve"})
+	if err != nil {
+		t.Fatalf("Find serve command error = %v, want nil", err)
+	}
+	registrationFlag := serveCommand.Flags().Lookup("registration-enabled")
+	if registrationFlag == nil || registrationFlag.DefValue != "false" {
+		t.Fatalf("registration-enabled default = %#v, want false from env", registrationFlag)
 	}
 
 	if got := envString("PYTTECHAT_WEB_ADDR", "fallback"); got != "127.0.0.1:3001" {

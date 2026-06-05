@@ -152,6 +152,58 @@ func TestAuthProtectedRoutesRedirectAndPublicPagesSetSecureCookie(t *testing.T) 
 	}
 }
 
+func TestAuthOptionAcceptsInterfaceImplementation(t *testing.T) {
+	store := newWebTestStore(t)
+	authService := &webAuthAdapter{Service: auth.NewService(auth.Options{
+		Store:      store,
+		BCryptCost: bcrypt.MinCost,
+	})}
+
+	server := NewServer(Options{
+		Client:              dummy.NewClient(),
+		Store:               store,
+		Auth:                authService,
+		RegistrationEnabled: true,
+	})
+
+	if !server.authEnabled() {
+		t.Fatalf("server auth is disabled, want interface-backed auth to enable protected routes")
+	}
+}
+
+func TestRegistrationDisabledHidesAndRejectsRegistration(t *testing.T) {
+	handler := newAuthTestHandler(t, dummy.NewClient(), false, false)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	response, body := get(t, client, server.URL+"/login")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if strings.Contains(body, "/register") || strings.Contains(body, "Create account") {
+		t.Fatalf("GET /login body = %q, did not expect registration link when disabled", body)
+	}
+
+	response, body = get(t, client, server.URL+"/register")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /register status = %d, want 404 when registration is disabled; body = %q", response.StatusCode, body)
+	}
+
+	request := newFormRequest(t, http.MethodPost, server.URL+"/register", map[string]string{
+		"csrf_token": "ignored",
+		"username":   "alice",
+		"password":   "correct horse",
+	})
+	response, body = do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /register status = %d, want 404 when registration is disabled; body = %q", response.StatusCode, body)
+	}
+}
+
 func TestAuthRegisterLoginLogoutAndCSRF(t *testing.T) {
 	handler := newAuthTestHandler(t, dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}}), true, false)
 	server := httptest.NewServer(handler)
@@ -2020,6 +2072,10 @@ type testHTMLPayload struct {
 	TurnID             string `json:"turn_id"`
 	AssistantMessageID string `json:"assistant_message_id"`
 	HTML               string `json:"html"`
+}
+
+type webAuthAdapter struct {
+	*auth.Service
 }
 
 type testDonePayload struct {

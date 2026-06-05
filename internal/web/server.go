@@ -43,7 +43,7 @@ type Options struct {
 	ReasoningEffort     string
 	CookieSecure        bool
 	Store               storage.Store
-	Auth                *auth.Service
+	Auth                auth.WebService
 	RegistrationEnabled bool
 }
 
@@ -53,7 +53,7 @@ type Server struct {
 	reasoningEffort string
 	cookieSecure    bool
 	store           storage.Store
-	auth            *auth.Service
+	auth            auth.WebService
 	registration    bool
 	template        *template.Template
 	markdown        *markdown.Renderer
