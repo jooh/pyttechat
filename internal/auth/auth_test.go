@@ -166,6 +166,69 @@ func TestBrowserSessionRandomFailures(t *testing.T) {
 	}
 }
 
+func TestServiceOptionsAndAuthenticatedBrowserSessions(t *testing.T) {
+	defaults := NewService(Options{})
+	if defaults.random == nil || defaults.now == nil {
+		t.Fatalf("NewService defaults = %#v, want random reader and clock", defaults)
+	}
+	if defaults.sessionTTL != DefaultSessionTTL {
+		t.Fatalf("default session TTL = %v, want %v", defaults.sessionTTL, DefaultSessionTTL)
+	}
+	if defaults.bcryptCost == 0 {
+		t.Fatalf("default bcrypt cost = 0, want configured cost")
+	}
+
+	now := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	service, _ := newTestServiceWithClock(t, func() time.Time { return now })
+	service.sessionTTL = time.Hour
+	ctx := context.Background()
+	user, err := service.Register(ctx, "session-user", "correct horse")
+	if err != nil {
+		t.Fatalf("Register error = %v, want nil", err)
+	}
+
+	browserSession, err := service.CreateAuthenticatedBrowserSession(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CreateAuthenticatedBrowserSession error = %v, want nil", err)
+	}
+	if browserSession.CookieValue == "" || browserSession.Session.UserID != user.ID || !browserSession.Session.Authenticated() {
+		t.Fatalf("browser session = %#v, want authenticated user session", browserSession)
+	}
+	if !browserSession.Session.ExpiresAt.Equal(now.Add(time.Hour)) || !browserSession.Session.CreatedAt.Equal(now) {
+		t.Fatalf("browser session timestamps = %s/%s, want %s/%s", browserSession.Session.CreatedAt, browserSession.Session.ExpiresAt, now, now.Add(time.Hour))
+	}
+	if _, err := service.VerifyBrowserSession(ctx, browserSession.CookieValue); err != nil {
+		t.Fatalf("VerifyBrowserSession authenticated error = %v, want nil", err)
+	}
+
+	if _, err := service.CreateAuthenticatedBrowserSession(ctx, 0); !errors.Is(err, storage.ErrInvalidArgument) {
+		t.Fatalf("CreateAuthenticatedBrowserSession invalid user error = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := service.RotateBrowserSession(ctx, browserSession.Session.ID, 0); !errors.Is(err, storage.ErrInvalidArgument) {
+		t.Fatalf("RotateBrowserSession invalid user error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestBrowserSessionRandomFailurePositions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bytes int
+	}{
+		{name: "secret token", bytes: 32},
+		{name: "csrf token", bytes: 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _ := newTestService(t)
+			service.random = strings.NewReader(strings.Repeat("x", tc.bytes))
+
+			_, err := service.CreateAnonymousBrowserSession(context.Background())
+			if err == nil {
+				t.Fatalf("CreateAnonymousBrowserSession error = nil, want random failure")
+			}
+		})
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {

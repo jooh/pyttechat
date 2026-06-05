@@ -204,6 +204,381 @@ func TestRegistrationDisabledHidesAndRejectsRegistration(t *testing.T) {
 	}
 }
 
+func TestAuthDisabledRoutesReturnNotFoundAndAuthenticatedFormsRedirect(t *testing.T) {
+	authDisabled := NewServer(Options{Client: dummy.NewClient()})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/login"},
+		{method: http.MethodPost, path: "/login"},
+		{method: http.MethodGet, path: "/register"},
+		{method: http.MethodPost, path: "/register"},
+		{method: http.MethodPost, path: "/logout"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
+			recorder := httptest.NewRecorder()
+
+			authDisabled.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("%s %s status = %d, want 404; body = %q", tc.method, tc.path, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	handler := newAuthTestHandler(t, dummy.NewClient(), true, false)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testNoRedirectHTTPClient(t)
+	registerCSRF := fetchAuthCSRFToken(t, client, server.URL, "/register")
+	request := newFormRequest(t, http.MethodPost, server.URL+"/register", map[string]string{
+		"csrf_token": registerCSRF,
+		"username":   "alice",
+		"password":   "correct horse",
+	})
+	response, body := do(t, client, request)
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/" {
+		t.Fatalf("POST /register status = %d location = %q, want 303 /; body = %q", response.StatusCode, response.Header.Get("Location"), body)
+	}
+
+	for _, path := range []string{"/login", "/register"} {
+		response, body = get(t, client, server.URL+path)
+		response.Body.Close()
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/" {
+			t.Fatalf("GET %s status = %d location = %q, want 303 /; body = %q", path, response.StatusCode, response.Header.Get("Location"), body)
+		}
+	}
+}
+
+func TestAuthFormsRenderValidationAndParseErrors(t *testing.T) {
+	store := newWebTestStore(t)
+	authService := auth.NewService(auth.Options{
+		Store:      store,
+		BCryptCost: bcrypt.MinCost,
+	})
+	if _, err := authService.Register(context.Background(), "taken", "correct horse"); err != nil {
+		t.Fatalf("precreate user error = %v, want nil", err)
+	}
+	handler := newAuthTestHandlerForStore(t, store, dummy.NewClient(), true, false)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchAuthCSRFToken(t, client, server.URL, "/register")
+	for _, tc := range []struct {
+		name     string
+		username string
+		password string
+		want     string
+	}{
+		{name: "invalid username", username: "!!", password: "correct horse", want: "Use 3-32 letters"},
+		{name: "weak password", username: "shortpass", password: "short", want: "Password must be at least 8 characters."},
+		{name: "username taken", username: "taken", password: "correct horse", want: "Username is already taken."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := newFormRequest(t, http.MethodPost, server.URL+"/register", map[string]string{
+				"csrf_token": csrfToken,
+				"username":   tc.username,
+				"password":   tc.password,
+			})
+			response, body := do(t, client, request)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("POST /register status = %d, want 400; body = %q", response.StatusCode, body)
+			}
+			if !strings.Contains(body, tc.want) {
+				t.Fatalf("POST /register body = %q, want validation message %q", body, tc.want)
+			}
+			if token := csrfFromHTML(t, body); token != "" {
+				csrfToken = token
+			}
+		})
+	}
+
+	loginCSRF := fetchAuthCSRFToken(t, client, server.URL, "/login")
+	request := newFormRequest(t, http.MethodPost, server.URL+"/login", map[string]string{
+		"csrf_token": loginCSRF,
+		"username":   "taken",
+		"password":   "wrong password",
+	})
+	response, body := do(t, client, request)
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || !strings.Contains(body, "Invalid username or password.") {
+		t.Fatalf("POST /login status = %d body = %q, want invalid credentials page", response.StatusCode, body)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "login", path: "/login"},
+		{name: "register", path: "/register"},
+	} {
+		t.Run(tc.name+" parse error", func(t *testing.T) {
+			token := fetchAuthCSRFToken(t, client, server.URL, tc.path)
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+tc.path, strings.NewReader("%"))
+			if err != nil {
+				t.Fatalf("NewRequest error = %v", err)
+			}
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			request.Header.Set(csrfHeaderName, token)
+			response, body := do(t, client, request)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest || !strings.Contains(body, "invalid form") {
+				t.Fatalf("POST %s status = %d body = %q, want invalid form", tc.path, response.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestAuthSessionExpiryInvalidCookieAndProtectedAPIs(t *testing.T) {
+	store := newWebTestStore(t)
+	now := time.Now().UTC().Add(time.Hour)
+	authService := auth.NewService(auth.Options{
+		Store:      store,
+		Now:        func() time.Time { return now },
+		SessionTTL: time.Second,
+		BCryptCost: bcrypt.MinCost,
+	})
+	handler := NewServer(Options{
+		Client:              dummy.NewClient(),
+		Store:               store,
+		Auth:                authService,
+		RegistrationEnabled: true,
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := testNoRedirectHTTPClient(t)
+	response, body := get(t, client, server.URL+"/login")
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	now = now.Add(2 * time.Second)
+	response, body = get(t, client, server.URL+"/")
+	response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/login" {
+		t.Fatalf("GET / with expired session status = %d location = %q, want 303 /login; body = %q", response.StatusCode, response.Header.Get("Location"), body)
+	}
+	if len(response.Cookies()) != 1 || response.Cookies()[0].Value != "" || response.Cookies()[0].MaxAge >= 0 {
+		t.Fatalf("expired session Set-Cookie = %#v, want clearing cookie", response.Cookies())
+	}
+
+	replacementClient := testHTTPClient(t)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/login", nil)
+	if err != nil {
+		t.Fatalf("NewRequest error = %v", err)
+	}
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "malformed"})
+	response, body = do(t, replacementClient, request)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login malformed cookie status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	if len(response.Cookies()) != 1 || response.Cookies()[0].Value == "" || response.Cookies()[0].Value == "malformed" {
+		t.Fatalf("malformed cookie replacement = %#v, want new session cookie", response.Cookies())
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   io.Reader
+	}{
+		{method: http.MethodPost, path: "/chat/turns", body: strings.NewReader(`{"prompt":"hello"}`)},
+		{method: http.MethodGet, path: "/chat/turns/missing/events"},
+		{method: http.MethodPost, path: "/chat/turns/missing/abort"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, tc.body)
+			if tc.body != nil {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s status = %d, want 401; body = %q", tc.method, tc.path, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAuthRoutesSurfaceAuthServiceFailures(t *testing.T) {
+	store := newWebTestStore(t)
+
+	t.Run("anonymous session creation failure", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client:              dummy.NewClient(),
+			Store:               store,
+			Auth:                &webFailingAuth{createAnonymousErr: errors.New("anonymous failed")},
+			RegistrationEnabled: true,
+		})
+		for _, tc := range []struct {
+			method string
+			path   string
+		}{
+			{method: http.MethodGet, path: "/login"},
+			{method: http.MethodPost, path: "/login"},
+			{method: http.MethodGet, path: "/register"},
+			{method: http.MethodPost, path: "/register"},
+			{method: http.MethodPost, path: "/logout"},
+		} {
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("%s %s status = %d, want 500; body = %q", tc.method, tc.path, recorder.Code, recorder.Body.String())
+			}
+		}
+	})
+
+	t.Run("cookie verify failure on public route", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store:  store,
+			Auth:   &webFailingAuth{verifyErr: errors.New("verify failed")},
+		})
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/login", nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess.secret"})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("GET /login status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("cookie verify failure on protected route", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store:  store,
+			Auth:   &webFailingAuth{verifyErr: errors.New("verify failed")},
+		})
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess.secret"})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("GET / status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("stored user session hydration failure", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store:  store,
+			Auth: &webFailingAuth{verified: storage.Session{
+				ID:        "sess",
+				UserID:    999,
+				CSRFToken: "csrf",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}},
+		})
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess.secret"})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("GET / status = %d, want 500 from stored session hydration; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("login rotation failure", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store:  store,
+			Auth: &webFailingAuth{
+				anonymous: storage.Session{ID: "anon", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)},
+				user:      storage.User{ID: 1, Username: "alice"},
+				rotateErr: errors.New("rotate failed"),
+			},
+		})
+		request := newFormRequest(t, http.MethodPost, "/login", map[string]string{
+			"csrf_token": "csrf",
+			"username":   "alice",
+			"password":   "correct horse",
+		})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("POST /login status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("register rotation failure", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client:              dummy.NewClient(),
+			Store:               store,
+			RegistrationEnabled: true,
+			Auth: &webFailingAuth{
+				anonymous: storage.Session{ID: "anon", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)},
+				user:      storage.User{ID: 1, Username: "alice"},
+				rotateErr: errors.New("rotate failed"),
+			},
+		})
+		request := newFormRequest(t, http.MethodPost, "/register", map[string]string{
+			"csrf_token": "csrf",
+			"username":   "alice",
+			"password":   "correct horse",
+		})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("POST /register status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("logout failure", func(t *testing.T) {
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store:  store,
+			Auth: &webFailingAuth{
+				verified:  storage.Session{ID: "sess", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)},
+				logoutErr: errors.New("logout failed"),
+			},
+		})
+		request := newFormRequest(t, http.MethodPost, "/logout", map[string]string{"csrf_token": "csrf"})
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess.secret"})
+		recorder := httptest.NewRecorder()
+
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("POST /logout status = %d, want 500; body = %q", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("auth template failure", func(t *testing.T) {
+		handler := NewServer(Options{Client: dummy.NewClient()})
+		handler.template = template.Must(template.New("auth.html").Parse(`{{template "missing" .}}`))
+		recorder := httptest.NewRecorder()
+
+		handler.renderAuthPage(recorder, http.StatusOK, authPageData{Title: "Sign in"})
+
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "template error") {
+			t.Fatalf("renderAuthPage status = %d body = %q, want original status with template error body", recorder.Code, recorder.Body.String())
+		}
+	})
+}
+
 func TestAuthRegisterLoginLogoutAndCSRF(t *testing.T) {
 	handler := newAuthTestHandler(t, dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}}), true, false)
 	server := httptest.NewServer(handler)
@@ -1599,6 +1974,110 @@ func TestViewMessagesKeepsVisibleNonTextMessages(t *testing.T) {
 	}
 }
 
+func TestRenderingHelpersCoverBranchVariants(t *testing.T) {
+	if got := renderErrorPart(llm.Part{}); got != "" {
+		t.Fatalf("renderErrorPart empty = %q, want empty", got)
+	}
+	image := renderImagePart(llm.Part{URL: "/assets/app.css", Filename: "plot.png"})
+	if !strings.Contains(image, `alt="plot.png"`) || strings.Contains(image, `width="`) || strings.Contains(image, `height="`) {
+		t.Fatalf("renderImagePart filename fallback = %q, want filename alt without dimensions", image)
+	}
+	if got := renderImagePart(llm.Part{URL: "https://proxy.example/image.png"}); got != "" {
+		t.Fatalf("renderImagePart unsafe URL = %q, want empty", got)
+	}
+
+	attachment := renderAttachmentPart(llm.Part{URL: "bad url", Text: ""})
+	if !strings.Contains(attachment, `<span class="message-attachment">`) || !strings.Contains(attachment, `attachment`) || strings.Contains(attachment, `<a `) {
+		t.Fatalf("renderAttachmentPart without safe URL/name = %q, want span fallback", attachment)
+	}
+	if got := attachmentMeta(llm.Part{MimeType: "text/plain", Size: 2048}); got != "text/plain - 2.0 KB" {
+		t.Fatalf("attachmentMeta KB = %q, want text/plain - 2.0 KB", got)
+	}
+	if got := formatByteSize(7); got != "7 B" {
+		t.Fatalf("formatByteSize bytes = %q, want 7 B", got)
+	}
+	if got := formatByteSize(2 * 1024 * 1024); got != "2.0 MB" {
+		t.Fatalf("formatByteSize MB = %q, want 2.0 MB", got)
+	}
+	if got := formatByteSize(0); got != "" {
+		t.Fatalf("formatByteSize zero = %q, want empty", got)
+	}
+
+	for _, raw := range []string{"", "/assets/app.css bad", `/assets/app.css"`, "/other/app.css"} {
+		if got := safeBFFURL(raw); got != "" {
+			t.Fatalf("safeBFFURL(%q) = %q, want empty", raw, got)
+		}
+	}
+	if got := messageRoleLabel(llm.RoleAssistant); got != "Assistant" {
+		t.Fatalf("messageRoleLabel assistant = %q, want Assistant", got)
+	}
+	if got := messageRoleLabel(llm.RoleSystem); got != "system" {
+		t.Fatalf("messageRoleLabel system = %q, want raw role", got)
+	}
+
+	var parts []llm.Part
+	appendOutputDelta(&parts, llm.PartText, "")
+	if len(parts) != 0 {
+		t.Fatalf("appendOutputDelta empty = %#v, want no parts", parts)
+	}
+	appendOutputDelta(&parts, llm.PartText, "hel")
+	appendOutputDelta(&parts, llm.PartText, "lo")
+	appendOutputDelta(&parts, llm.PartReasoning, "thinking")
+	if len(parts) != 2 || parts[0].Text != "hello" || parts[1].Text != "thinking" {
+		t.Fatalf("appendOutputDelta parts = %#v, want merged text then reasoning", parts)
+	}
+	mergeCompletedOutputPart(&parts, llm.Part{})
+	mergeCompletedOutputPart(&parts, llm.Part{
+		Type:             llm.PartReasoning,
+		ID:               "rs_1",
+		Text:             "final thinking",
+		Summary:          []string{"summary"},
+		EncryptedContent: "encrypted",
+	})
+	if parts[1].ID != "rs_1" || parts[1].Text != "final thinking" || len(parts[1].Summary) != 1 || parts[1].EncryptedContent != "encrypted" {
+		t.Fatalf("mergeCompletedOutputPart reasoning = %#v, want metadata merged into existing reasoning", parts[1])
+	}
+	textOnly := []llm.Part{{Type: llm.PartText, Text: "hello"}}
+	mergeCompletedOutputPart(&textOnly, llm.Part{Type: llm.PartText, Text: "hello world"})
+	if len(textOnly) != 1 || textOnly[0].Text != "hello world" {
+		t.Fatalf("mergeCompletedOutputPart text prefix = %#v, want text upgraded in place", textOnly)
+	}
+	before := len(textOnly)
+	mergeCompletedOutputPart(&textOnly, llm.Part{Type: llm.PartText, Text: "replacement"})
+	if len(textOnly) != before+1 || textOnly[len(textOnly)-1].Text != "replacement" {
+		t.Fatalf("mergeCompletedOutputPart text replacement = %#v, want appended replacement", textOnly)
+	}
+	var reasoningOnly []llm.Part
+	mergeCompletedOutputPart(&reasoningOnly, llm.Part{Type: llm.PartReasoning, Summary: []string{"late summary"}})
+	if len(reasoningOnly) != 1 || len(reasoningOnly[0].Summary) != 1 {
+		t.Fatalf("mergeCompletedOutputPart missing reasoning = %#v, want appended reasoning", reasoningOnly)
+	}
+
+	escaped := string(escapedPlainTextHTML("<a>\r\nb\rc"))
+	if escaped != "&lt;a&gt;<br>\nb<br>\nc" {
+		t.Fatalf("escapedPlainTextHTML = %q, want escaped line breaks", escaped)
+	}
+	html, err := renderAssistantBody([]llm.Part{{Type: llm.PartText, Text: "   "}}, NewServer(Options{Client: dummy.NewClient()}).markdown)
+	if err != nil || html != "" {
+		t.Fatalf("renderAssistantBody whitespace = %q, %v; want empty nil", html, err)
+	}
+	statuses := assistantStatuses([]llm.Part{
+		{Type: llm.PartReasoning, Summary: []string{"from summary"}},
+		{Type: llm.PartReasoning, Text: " "},
+		{Type: llm.PartSummary, Text: " "},
+	}, 2)
+	if len(statuses) != 1 || statuses[0].Text != "from summary" || statuses[0].ContentID == "" {
+		t.Fatalf("assistantStatuses = %#v, want one summary-backed reasoning status", statuses)
+	}
+	if got := statusContentID(-1, 2); got != "" {
+		t.Fatalf("statusContentID negative = %q, want empty", got)
+	}
+	views := viewMessages([]llm.Message{{Role: llm.RoleAssistant}}, NewServer(Options{Client: dummy.NewClient()}).markdown)
+	if len(views) != 0 {
+		t.Fatalf("viewMessages empty assistant = %#v, want skipped", views)
+	}
+}
+
 func TestSafeBFFURLRejectsUnservedChatFileRoutes(t *testing.T) {
 	for _, raw := range []string{
 		"/chat/attachments/file_1",
@@ -2076,6 +2555,57 @@ type testHTMLPayload struct {
 
 type webAuthAdapter struct {
 	*auth.Service
+}
+
+type webFailingAuth struct {
+	anonymous          storage.Session
+	verified           storage.Session
+	user               storage.User
+	createAnonymousErr error
+	verifyErr          error
+	rotateErr          error
+	logoutErr          error
+}
+
+func (a *webFailingAuth) Register(context.Context, string, string) (storage.User, error) {
+	return a.user, nil
+}
+
+func (a *webFailingAuth) Authenticate(context.Context, string, string) (storage.User, error) {
+	return a.user, nil
+}
+
+func (a *webFailingAuth) CreateAnonymousBrowserSession(context.Context) (auth.BrowserSession, error) {
+	if a.createAnonymousErr != nil {
+		return auth.BrowserSession{}, a.createAnonymousErr
+	}
+	session := a.anonymous
+	if session.ID == "" {
+		session = storage.Session{ID: "anon", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)}
+	}
+	return auth.BrowserSession{CookieValue: session.ID + ".secret", Session: session}, nil
+}
+
+func (a *webFailingAuth) RotateBrowserSession(context.Context, string, int64) (auth.BrowserSession, error) {
+	if a.rotateErr != nil {
+		return auth.BrowserSession{}, a.rotateErr
+	}
+	session := storage.Session{ID: "rotated", UserID: a.user.ID, CSRFToken: "csrf-rotated", ExpiresAt: time.Now().Add(time.Hour)}
+	return auth.BrowserSession{CookieValue: "rotated.secret", Session: session}, nil
+}
+
+func (a *webFailingAuth) VerifyBrowserSession(context.Context, string) (storage.Session, error) {
+	if a.verifyErr != nil {
+		return storage.Session{}, a.verifyErr
+	}
+	if a.verified.ID != "" {
+		return a.verified, nil
+	}
+	return storage.Session{}, auth.ErrInvalidSession
+}
+
+func (a *webFailingAuth) Logout(context.Context, string) error {
+	return a.logoutErr
 }
 
 type testDonePayload struct {

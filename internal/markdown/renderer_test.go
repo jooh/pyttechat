@@ -111,6 +111,91 @@ After`)
 	}
 }
 
+func TestRendererHandlesArtifactEdgeCases(t *testing.T) {
+	renderer := NewRenderer()
+
+	for _, tc := range []struct {
+		name       string
+		in         string
+		want       []string
+		notWant    []string
+		wantExact  string
+		exactCheck bool
+	}{
+		{
+			name:       "empty input",
+			in:         "",
+			wantExact:  "",
+			exactCheck: true,
+		},
+		{
+			name:    "unclosed directive stays literal",
+			in:      ":::artifact title=\"Draft\"\n# still markdown",
+			want:    []string{":::artifact", "<h1>still markdown</h1>"},
+			notWant: []string{"message-artifact"},
+		},
+		{
+			name:    "indented directive is not an artifact",
+			in:      "    :::artifact\n    # code\n    :::",
+			want:    []string{":::artifact", "# code"},
+			notWant: []string{"message-artifact"},
+		},
+		{
+			name: "marker collision keeps original text and artifact",
+			in: `PYTTECHAT_ARTIFACT_0
+
+:::artifact title="Collision" type="text/plain"
+artifact body
+:::`,
+			want: []string{"PYTTECHAT_ARTIFACT_0", "Collision", "artifact body", "message-artifact"},
+		},
+		{
+			name: "default artifact metadata",
+			in: `:::artifact title=" " type=" "
+plain body
+:::`,
+			want: []string{`data-artifact-type="text/plain"`, "Artifact", "plain body"},
+		},
+		{
+			name: "artifact after single newline",
+			in:   "Before\n:::artifact title=\"Notes\" type=\"text/plain\"\nbody\n:::\nAfter",
+			want: []string{"<p>Before</p>", "Notes", "body", "<p>After</p>"},
+		},
+		{
+			name: "mermaid artifact",
+			in:   ":::artifact title=\"Flow\" type=\"application/vnd.mermaid\"\ngraph TD\nA-->B\n:::\n",
+			want: []string{`data-artifact-type="application/vnd.mermaid"`, `class="language-mermaid"`, "graph TD"},
+		},
+		{
+			name:    "unknown artifact type is escaped code",
+			in:      ":::artifact title=\"HTML\" type=\"application/x-custom\"\n<script>alert(1)</script>\n:::\n",
+			want:    []string{`data-artifact-type="application/x-custom"`, "&lt;script&gt;"},
+			notWant: []string{"<script>"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			html, err := renderer.Render(tc.in)
+			if err != nil {
+				t.Fatalf("Render error = %v", err)
+			}
+			got := string(html)
+			if tc.exactCheck && got != tc.wantExact {
+				t.Fatalf("Render(%q) = %q, want %q", tc.in, got, tc.wantExact)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("Render output = %q, want substring %q", got, want)
+				}
+			}
+			for _, unwanted := range tc.notWant {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("Render output = %q, did not expect substring %q", got, unwanted)
+				}
+			}
+		})
+	}
+}
+
 func TestRendererDecoratesCitationMarkers(t *testing.T) {
 	renderer := NewRenderer()
 
@@ -146,6 +231,38 @@ func TestRendererDecoratesCitationsOnlyInTextNodes(t *testing.T) {
 	}
 	if !strings.Contains(got, `data-citation="turn1search2"`) {
 		t.Fatalf("Render output = %q, want visible citation decorated", got)
+	}
+}
+
+func TestCitationDecorationHandlesMalformedHTMLAndMarkers(t *testing.T) {
+	if got := decorateCitations("<p>Broken tag 【turn1search0】"); !strings.Contains(got, `data-citation="turn1search0"`) {
+		t.Fatalf("decorateCitations malformed HTML = %q, want citation decorated", got)
+	}
+	if got := decorateCitations("<pre>【turn1search0】</pre><code>【turn1search1】</code> visible 【turn1search2】"); strings.Count(got, `class="citation-chip"`) != 1 {
+		t.Fatalf("decorateCitations code/pre = %q, want only visible citation decorated", got)
+	}
+	if got := citationMatches("unfinished 【turn1search0"); len(got) != 0 {
+		t.Fatalf("citationMatches unfinished = %#v, want none", got)
+	}
+	if got := citationMatches("invalid 【turn1bad0】 then valid 【turn2file3】"); len(got) != 1 || got[0].id != "turn2file3" {
+		t.Fatalf("citationMatches mixed = %#v, want turn2file3 only", got)
+	}
+
+	for _, tc := range []struct {
+		tag         string
+		name        string
+		closing     bool
+		selfClosing bool
+	}{
+		{tag: "x", name: ""},
+		{tag: "</>", name: "", closing: true},
+		{tag: "< code />", name: "code", selfClosing: true},
+		{tag: "</Pre>", name: "pre", closing: true},
+	} {
+		name, closing, selfClosing := htmlTagName(tc.tag)
+		if name != tc.name || closing != tc.closing || selfClosing != tc.selfClosing {
+			t.Fatalf("htmlTagName(%q) = %q, %v, %v; want %q, %v, %v", tc.tag, name, closing, selfClosing, tc.name, tc.closing, tc.selfClosing)
+		}
 	}
 }
 
@@ -295,5 +412,26 @@ func TestRendererRenderBlockUsesSamePolicy(t *testing.T) {
 	}
 	if got := string(html); !strings.Contains(got, "<code>code</code>") {
 		t.Fatalf("RenderBlock = %q, want inline code", got)
+	}
+}
+
+func TestRendererPrivateHelpersCoverParserBranches(t *testing.T) {
+	if block, ok := startsFence("    ```go\n"); ok || block.open {
+		t.Fatalf("startsFence indented = %#v, %v; want no fence", block, ok)
+	}
+	if block, ok := startsFence("``\n"); ok || block.open {
+		t.Fatalf("startsFence short = %#v, %v; want no fence", block, ok)
+	}
+	if block, ok := startsFence("~~~\n"); !ok || !block.open || block.marker != '~' || block.length != 3 {
+		t.Fatalf("startsFence tilde = %#v, %v; want open tilde fence", block, ok)
+	}
+	if isArtifactOpener("    :::artifact\n") {
+		t.Fatalf("isArtifactOpener indented by four spaces = true, want false")
+	}
+	if got := artifactMarker("PYTTECHAT_ARTIFACT_0 PYTTECHAT_ARTIFACT_0_1", 0); got != "PYTTECHAT_ARTIFACT_0_2" {
+		t.Fatalf("artifactMarker collision = %q, want suffixed marker", got)
+	}
+	if got := string(escapedCodeBlock("<tag>", "")); !strings.Contains(got, "&lt;tag&gt;") || strings.Contains(got, `class="`) {
+		t.Fatalf("escapedCodeBlock without class = %q, want escaped plain code", got)
 	}
 }
