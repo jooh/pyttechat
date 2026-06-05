@@ -45,7 +45,7 @@ GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
 COVERAGE_PROFILE ?= coverage.out
-COVERAGE_MIN ?= 95.0
+COVERAGE_MIN ?= 100.0
 
 GO_FILES := $(shell find . \( -path './.agent/skills/references/*/repo' -o -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 

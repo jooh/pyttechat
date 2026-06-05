@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/storage"
 
 	"golang.org/x/crypto/bcrypt"
@@ -209,6 +210,91 @@ func TestServiceOptionsAndAuthenticatedBrowserSessions(t *testing.T) {
 	}
 }
 
+func TestServiceDefaultsAndStoreFailures(t *testing.T) {
+	ctx := context.Background()
+	errStore := errors.New("store failed")
+
+	t.Run("default clock", func(t *testing.T) {
+		service := NewService(Options{
+			Store: authTestStore{
+				createUser: func(_ context.Context, params storage.CreateUserParams) (storage.User, error) {
+					if params.CreatedAt.IsZero() {
+						t.Fatalf("CreatedAt is zero, want default clock")
+					}
+					return storage.User{ID: 1, Username: params.Username, PasswordHash: params.PasswordHash, CreatedAt: params.CreatedAt}, nil
+				},
+			},
+			BCryptCost: bcrypt.MinCost,
+		})
+		if _, err := service.Register(ctx, "alice", "correct horse"); err != nil {
+			t.Fatalf("Register error = %v, want nil", err)
+		}
+	})
+
+	t.Run("bcrypt failure", func(t *testing.T) {
+		service := NewService(Options{Store: authTestStore{}, BCryptCost: bcrypt.MaxCost + 1})
+		if _, err := service.Register(ctx, "alice", "correct horse"); err == nil {
+			t.Fatalf("Register bcrypt error = nil, want error")
+		}
+	})
+
+	t.Run("register store failure", func(t *testing.T) {
+		service := NewService(Options{
+			Store: authTestStore{
+				createUser: func(context.Context, storage.CreateUserParams) (storage.User, error) {
+					return storage.User{}, errStore
+				},
+			},
+			BCryptCost: bcrypt.MinCost,
+		})
+		if _, err := service.Register(ctx, "alice", "correct horse"); !errors.Is(err, errStore) {
+			t.Fatalf("Register error = %v, want store error", err)
+		}
+	})
+
+	t.Run("authenticate store failure", func(t *testing.T) {
+		service := NewService(Options{
+			Store: authTestStore{
+				userByUsername: func(context.Context, string) (storage.User, error) {
+					return storage.User{}, errStore
+				},
+			},
+			BCryptCost: bcrypt.MinCost,
+		})
+		if _, err := service.Authenticate(ctx, "alice", "correct horse"); !errors.Is(err, errStore) {
+			t.Fatalf("Authenticate error = %v, want store error", err)
+		}
+	})
+
+	t.Run("create session store failure", func(t *testing.T) {
+		service := NewService(Options{
+			Store: authTestStore{
+				createSession: func(context.Context, storage.CreateSessionParams) (storage.Session, error) {
+					return storage.Session{}, errStore
+				},
+			},
+			BCryptCost: bcrypt.MinCost,
+		})
+		if _, err := service.CreateAnonymousBrowserSession(ctx); !errors.Is(err, errStore) {
+			t.Fatalf("CreateAnonymousBrowserSession error = %v, want store error", err)
+		}
+	})
+
+	t.Run("verify session store failure", func(t *testing.T) {
+		service := NewService(Options{
+			Store: authTestStore{
+				sessionByID: func(context.Context, string) (storage.Session, error) {
+					return storage.Session{}, errStore
+				},
+			},
+			BCryptCost: bcrypt.MinCost,
+		})
+		if _, err := service.VerifyBrowserSession(ctx, "session.secret"); !errors.Is(err, errStore) {
+			t.Fatalf("VerifyBrowserSession error = %v, want store error", err)
+		}
+	})
+}
+
 func TestBrowserSessionRandomFailurePositions(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -233,6 +319,69 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
+}
+
+type authTestStore struct {
+	createUser     func(context.Context, storage.CreateUserParams) (storage.User, error)
+	userByUsername func(context.Context, string) (storage.User, error)
+	createSession  func(context.Context, storage.CreateSessionParams) (storage.Session, error)
+	sessionByID    func(context.Context, string) (storage.Session, error)
+}
+
+func (s authTestStore) Migrate(context.Context) error {
+	return nil
+}
+
+func (s authTestStore) CreateUser(ctx context.Context, params storage.CreateUserParams) (storage.User, error) {
+	if s.createUser != nil {
+		return s.createUser(ctx, params)
+	}
+	return storage.User{}, nil
+}
+
+func (s authTestStore) UserByUsername(ctx context.Context, username string) (storage.User, error) {
+	if s.userByUsername != nil {
+		return s.userByUsername(ctx, username)
+	}
+	return storage.User{}, storage.ErrNotFound
+}
+
+func (s authTestStore) CreateSession(ctx context.Context, params storage.CreateSessionParams) (storage.Session, error) {
+	if s.createSession != nil {
+		return s.createSession(ctx, params)
+	}
+	return storage.Session{}, nil
+}
+
+func (s authTestStore) RotateSession(context.Context, string, storage.CreateSessionParams) (storage.Session, error) {
+	return storage.Session{}, nil
+}
+
+func (s authTestStore) SessionByID(ctx context.Context, id string) (storage.Session, error) {
+	if s.sessionByID != nil {
+		return s.sessionByID(ctx, id)
+	}
+	return storage.Session{}, storage.ErrNotFound
+}
+
+func (s authTestStore) DeleteSession(context.Context, string) error {
+	return nil
+}
+
+func (s authTestStore) DefaultConversationForUser(context.Context, int64) (storage.Conversation, error) {
+	return storage.Conversation{}, nil
+}
+
+func (s authTestStore) Messages(context.Context, int64) ([]llm.Message, error) {
+	return nil, nil
+}
+
+func (s authTestStore) AppendTurn(context.Context, int64, llm.Message, llm.Message) error {
+	return nil
+}
+
+func (s authTestStore) Close() error {
+	return nil
 }
 
 func newTestService(t *testing.T) (*Service, storage.Store) {

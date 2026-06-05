@@ -335,6 +335,23 @@ func TestAuthFormsRenderValidationAndParseErrors(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsInvalidCSRF(t *testing.T) {
+	server := httptest.NewServer(newAuthTestHandler(t, dummy.NewClient(), true, false))
+	defer server.Close()
+	client := testHTTPClient(t)
+
+	response, body := do(t, client, newFormRequest(t, http.MethodPost, server.URL+"/login", map[string]string{
+		"csrf_token": "wrong",
+		"username":   "alice",
+		"password":   "correct horse",
+	}))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /login status = %d, want 403; body = %q", response.StatusCode, body)
+	}
+}
+
 func TestAuthSessionExpiryInvalidCookieAndProtectedAPIs(t *testing.T) {
 	store := newWebTestStore(t)
 	now := time.Now().UTC().Add(time.Hour)
@@ -680,6 +697,61 @@ func TestAuthPerUserHistoryIsolationAndPersistedReload(t *testing.T) {
 	if !strings.Contains(body, "alice prompt") || !strings.Contains(body, "first answer") {
 		t.Fatalf("alice restarted body = %q, want persisted history", body)
 	}
+}
+
+func TestSessionHelpersCoverLegacyAnonymousAndPersistedLoadFailures(t *testing.T) {
+	t.Run("public session falls back to legacy when auth disabled", func(t *testing.T) {
+		handler := NewServer(Options{Client: dummy.NewClient()})
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		recorder := httptest.NewRecorder()
+
+		session, err := handler.publicSession(recorder, request)
+		if err != nil {
+			t.Fatalf("publicSession error = %v, want nil", err)
+		}
+		if session == nil || session.id == "" {
+			t.Fatalf("session = %#v, want legacy browser session", session)
+		}
+	})
+
+	t.Run("authenticated session rejects anonymous stored session", func(t *testing.T) {
+		handler := newAuthTestHandler(t, dummy.NewClient(), true, false)
+		publicRecorder := httptest.NewRecorder()
+		publicRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		if _, err := handler.publicSession(publicRecorder, publicRequest); err != nil {
+			t.Fatalf("publicSession error = %v, want nil", err)
+		}
+		cookies := publicRecorder.Result().Cookies()
+		if len(cookies) == 0 {
+			t.Fatalf("publicSession did not set a cookie")
+		}
+
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		request.AddCookie(cookies[0])
+		_, err := handler.authenticatedSession(httptest.NewRecorder(), request)
+		if !errors.Is(err, auth.ErrInvalidSession) {
+			t.Fatalf("authenticatedSession error = %v, want invalid session", err)
+		}
+	})
+
+	t.Run("stored authenticated session returns persisted history load failure", func(t *testing.T) {
+		errStore := errors.New("messages failed")
+		handler := NewServer(Options{
+			Client: dummy.NewClient(),
+			Store: webStore{
+				conversation: storage.Conversation{ID: 10, UserID: 1, Title: "Default", IsDefault: true},
+				messagesErr:  errStore,
+			},
+		})
+		_, err := handler.browserSessionForStoredSession(context.Background(), storage.Session{
+			ID:        "session",
+			UserID:    1,
+			CSRFToken: "csrf",
+		})
+		if !errors.Is(err, errStore) {
+			t.Fatalf("browserSessionForStoredSession error = %v, want messages error", err)
+		}
+	})
 }
 
 func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
@@ -1957,6 +2029,24 @@ func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 	}
 }
 
+func TestViewMessagesFallsBackWhenRendererFails(t *testing.T) {
+	views := viewMessages([]llm.Message{
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: "<unsafe>"},
+			},
+		},
+	}, errorRenderer{})
+
+	if len(views) != 1 {
+		t.Fatalf("view count = %d, want 1", len(views))
+	}
+	if !strings.Contains(string(views[0].HTML), "&lt;unsafe&gt;") {
+		t.Fatalf("HTML = %q, want escaped fallback text", views[0].HTML)
+	}
+}
+
 func TestViewMessagesKeepsVisibleNonTextMessages(t *testing.T) {
 	messages := viewMessages([]llm.Message{
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "visible thinking"}}},
@@ -2177,6 +2267,63 @@ func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
 			t.Fatalf("replay = %#v terminal=%v, want terminal stream-error", replay, terminal)
 		}
 	})
+}
+
+func TestTurnJobRendererFallbackAndEmptyDeltas(t *testing.T) {
+	originalRenderer := newMarkdownRenderer
+	t.Cleanup(func() {
+		newMarkdownRenderer = originalRenderer
+	})
+
+	t.Run("renderer fallback", func(t *testing.T) {
+		newMarkdownRenderer = func() assistantRenderer {
+			return errorRenderer{}
+		}
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{events: []llm.Event{
+			{Type: llm.EventTextDelta, Delta: "<unsafe>"},
+			{Type: llm.EventCompleted},
+		}}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || !hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
+			t.Fatalf("replay = %#v terminal=%v, want preview and done fallback events", replay, terminal)
+		}
+		if !hasReplayData(replay, `\u0026lt;unsafe\u0026gt;`) {
+			t.Fatalf("replay = %#v, want escaped fallback HTML", replay)
+		}
+	})
+
+	t.Run("empty text delta", func(t *testing.T) {
+		newMarkdownRenderer = originalRenderer
+		turn := newTestTurnJob(t)
+		session := chat.NewService(webSequenceClient{events: []llm.Event{
+			{Type: llm.EventTextDelta, Delta: ""},
+			{Type: llm.EventCompleted},
+		}}).NewSession()
+
+		turn.run(session, chat.SendOptions{})
+
+		replay, _, terminal := turn.subscribe(0)
+		if !terminal || hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
+			t.Fatalf("replay = %#v terminal=%v, want only terminal done event", replay, terminal)
+		}
+	})
+}
+
+func TestMergeCompletedOutputPartSkipsTrailingNonReasoningParts(t *testing.T) {
+	parts := []llm.Part{
+		{Type: llm.PartReasoning, Text: "old"},
+		{Type: llm.PartText, Text: "answer"},
+	}
+
+	mergeCompletedOutputPart(&parts, llm.Part{Type: llm.PartReasoning, Text: "new"})
+
+	if parts[0].Text != "new" || parts[1].Text != "answer" {
+		t.Fatalf("parts = %#v, want reasoning updated before trailing text", parts)
+	}
 }
 
 func TestTurnJobFinishClosesSubscribersWithoutTerminalEvent(t *testing.T) {
@@ -3135,4 +3282,74 @@ func hasReplayEvent(events []streamEvent, name string) bool {
 		}
 	}
 	return false
+}
+
+func hasReplayData(events []streamEvent, needle string) bool {
+	for _, event := range events {
+		if strings.Contains(string(event.Data), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+type errorRenderer struct{}
+
+func (errorRenderer) Render(string) (template.HTML, error) {
+	return "", errors.New("render failed")
+}
+
+type webStore struct {
+	conversation storage.Conversation
+	messagesErr  error
+}
+
+func (s webStore) Migrate(context.Context) error {
+	return nil
+}
+
+func (s webStore) CreateUser(context.Context, storage.CreateUserParams) (storage.User, error) {
+	return storage.User{}, nil
+}
+
+func (s webStore) UserByUsername(context.Context, string) (storage.User, error) {
+	return storage.User{}, storage.ErrNotFound
+}
+
+func (s webStore) CreateSession(context.Context, storage.CreateSessionParams) (storage.Session, error) {
+	return storage.Session{}, nil
+}
+
+func (s webStore) RotateSession(context.Context, string, storage.CreateSessionParams) (storage.Session, error) {
+	return storage.Session{}, nil
+}
+
+func (s webStore) SessionByID(context.Context, string) (storage.Session, error) {
+	return storage.Session{}, storage.ErrNotFound
+}
+
+func (s webStore) DeleteSession(context.Context, string) error {
+	return nil
+}
+
+func (s webStore) DefaultConversationForUser(context.Context, int64) (storage.Conversation, error) {
+	if s.conversation.ID == 0 {
+		return storage.Conversation{}, storage.ErrNotFound
+	}
+	return s.conversation, nil
+}
+
+func (s webStore) Messages(context.Context, int64) ([]llm.Message, error) {
+	if s.messagesErr != nil {
+		return nil, s.messagesErr
+	}
+	return nil, nil
+}
+
+func (s webStore) AppendTurn(context.Context, int64, llm.Message, llm.Message) error {
+	return nil
+}
+
+func (s webStore) Close() error {
+	return nil
 }

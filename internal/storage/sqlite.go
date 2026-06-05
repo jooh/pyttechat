@@ -18,6 +18,11 @@ import (
 
 const DefaultDatabaseURL = "sqlite://./.cache/pyttechat/pyttechat.db"
 
+var (
+	sqliteDriverName = "sqlite"
+	sqliteOpen       = sql.Open
+)
+
 type SQLite struct {
 	db *sql.DB
 }
@@ -30,17 +35,16 @@ func OpenSQLite(ctx context.Context, databaseURL string) (*SQLite, error) {
 	if err := ensureSQLiteDir(dsn); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sqliteOpen(sqliteDriverName, dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	store := &SQLite{db: db}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+	if _, err := db.ExecContext(ctx, `
+PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
+`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -402,14 +406,8 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
 		return ErrInvalidArgument
 	}
-	userParts, err := json.Marshal(userMessage.Parts)
-	if err != nil {
-		return err
-	}
-	assistantParts, err := json.Marshal(assistantMessage.Parts)
-	if err != nil {
-		return err
-	}
+	userParts, _ := json.Marshal(userMessage.Parts)
+	assistantParts, _ := json.Marshal(assistantMessage.Parts)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

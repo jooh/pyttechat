@@ -63,6 +63,9 @@ var (
 		return cmd.Help()
 	}
 	printUsage = printUsageToError
+	openStore  = func(ctx context.Context, databaseURL string) (storage.Store, error) {
+		return storage.OpenSQLite(ctx, databaseURL)
+	}
 )
 
 func NewRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
@@ -123,7 +126,7 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			store, err := storage.OpenSQLite(ctx, opts.databaseURL)
+			store, err := openStore(ctx, opts.databaseURL)
 			if err != nil {
 				return err
 			}
@@ -266,7 +269,7 @@ func newCLIChatSession(ctx context.Context, opts rootOptions) (*chat.Session, fu
 	if err != nil {
 		return nil, func() {}, err
 	}
-	store, err := storage.OpenSQLite(ctx, opts.databaseURL)
+	store, err := openStore(ctx, opts.databaseURL)
 	if err != nil {
 		return nil, func() {}, err
 	}

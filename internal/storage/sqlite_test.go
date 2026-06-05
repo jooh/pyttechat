@@ -3,10 +3,13 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +95,32 @@ func TestSQLiteOpenDSNAndDirectoryHandling(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("NewSQLiteForDB Close error = %v, want nil", err)
+	}
+}
+
+func TestSQLiteOpenPropagatesSetupFailures(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("file"), 0o600); err != nil {
+		t.Fatalf("write blocker file error = %v, want nil", err)
+	}
+	if _, err := OpenSQLite(context.Background(), "sqlite://"+filepath.Join(blocker, "pyttechat.db")); err == nil {
+		t.Fatalf("OpenSQLite directory setup error = nil, want error")
+	}
+
+	originalDriverName := sqliteDriverName
+	t.Cleanup(func() {
+		sqliteDriverName = originalDriverName
+	})
+	sqliteDriverName = "missing-sqlite-driver-for-test"
+	if _, err := OpenSQLite(context.Background(), "sqlite://:memory:"); err == nil {
+		t.Fatalf("OpenSQLite sql.Open error = nil, want error")
+	}
+	sqliteDriverName = originalDriverName
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := OpenSQLite(ctx, "sqlite://:memory:"); err == nil {
+		t.Fatalf("OpenSQLite canceled setup error = nil, want error")
 	}
 }
 
@@ -460,6 +489,306 @@ func TestSQLiteConstraintDetector(t *testing.T) {
 	}
 }
 
+func TestSQLiteWritePathsPropagateDriverErrors(t *testing.T) {
+	ctx := context.Background()
+	errDriver := errors.New("driver failed")
+
+	t.Run("create user exec", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.CreateUser(ctx, CreateUserParams{Username: "alice", PasswordHash: []byte("hash")}); !errors.Is(err, errDriver) {
+			t.Fatalf("CreateUser error = %v, want driver error", err)
+		}
+	})
+
+	t.Run("create user last insert id", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return scriptedSQLResult{lastIDErr: errDriver}, nil
+			},
+		})
+		if _, err := store.CreateUser(ctx, CreateUserParams{Username: "alice", PasswordHash: []byte("hash")}); !errors.Is(err, errDriver) {
+			t.Fatalf("CreateUser error = %v, want LastInsertId error", err)
+		}
+	})
+
+	t.Run("rotate begin", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{beginErr: errDriver})
+		_, err := store.RotateSession(ctx, "", validSessionParams("session"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("RotateSession error = %v, want begin error", err)
+		}
+	})
+
+	t.Run("rotate delete", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			exec: func(query string, _ []driver.NamedValue) (driver.Result, error) {
+				if strings.Contains(query, "DELETE FROM web_sessions") {
+					return nil, errDriver
+				}
+				return scriptedSQLResult{}, nil
+			},
+		})
+		_, err := store.RotateSession(ctx, "old", validSessionParams("session"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("RotateSession error = %v, want delete error", err)
+		}
+	})
+
+	t.Run("rotate create session", func(t *testing.T) {
+		store := newMigratedTestSQLite(t)
+		_, err := store.RotateSession(ctx, "", CreateSessionParams{})
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("RotateSession error = %v, want invalid argument", err)
+		}
+	})
+
+	t.Run("rotate commit", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{commitErr: errDriver})
+		_, err := store.RotateSession(ctx, "", validSessionParams("session"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("RotateSession error = %v, want commit error", err)
+		}
+	})
+
+	t.Run("create session exec", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return nil, errDriver
+			},
+		})
+		_, err := store.CreateSession(ctx, validSessionParams("session"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("CreateSession error = %v, want exec error", err)
+		}
+	})
+
+	t.Run("default conversation insert", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{columns: conversationColumns}, nil
+			},
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want insert error", err)
+		}
+	})
+
+	t.Run("default conversation last insert id", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{columns: conversationColumns}, nil
+			},
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return scriptedSQLResult{lastIDErr: errDriver}, nil
+			},
+		})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want LastInsertId error", err)
+		}
+	})
+
+	t.Run("append begin", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{beginErr: errDriver})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("AppendTurn error = %v, want begin error", err)
+		}
+	})
+
+	t.Run("append max sequence", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return nil, errDriver
+			},
+		})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("AppendTurn error = %v, want query error", err)
+		}
+	})
+
+	t.Run("append user insert generic", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: maxSequenceQuery,
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				return nil, errDriver
+			},
+		})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("AppendTurn error = %v, want insert error", err)
+		}
+	})
+
+	t.Run("append assistant insert constraint", func(t *testing.T) {
+		execCount := 0
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: maxSequenceQuery,
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				execCount++
+				if execCount == 2 {
+					return nil, errors.New("constraint failed: messages_conversation_sequence_idx")
+				}
+				return scriptedSQLResult{}, nil
+			},
+		})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("AppendTurn error = %v, want invalid argument", err)
+		}
+	})
+
+	t.Run("append assistant insert generic", func(t *testing.T) {
+		execCount := 0
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: maxSequenceQuery,
+			exec: func(string, []driver.NamedValue) (driver.Result, error) {
+				execCount++
+				if execCount == 2 {
+					return nil, errDriver
+				}
+				return scriptedSQLResult{}, nil
+			},
+		})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("AppendTurn error = %v, want assistant insert error", err)
+		}
+	})
+
+	t.Run("append commit", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query:     maxSequenceQuery,
+			commitErr: errDriver,
+		})
+		err := store.AppendTurn(ctx, 1, llm.NewTextMessage(llm.RoleUser, "hello"), llm.NewTextMessage(llm.RoleAssistant, "answer"))
+		if !errors.Is(err, errDriver) {
+			t.Fatalf("AppendTurn error = %v, want commit error", err)
+		}
+	})
+}
+
+func TestSQLiteReadPathsPropagateDriverErrors(t *testing.T) {
+	ctx := context.Background()
+	errDriver := errors.New("driver failed")
+
+	t.Run("user query", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.UserByUsername(ctx, "alice"); !errors.Is(err, errDriver) {
+			t.Fatalf("UserByUsername error = %v, want query error", err)
+		}
+	})
+
+	t.Run("session query", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.SessionByID(ctx, "session"); !errors.Is(err, errDriver) {
+			t.Fatalf("SessionByID error = %v, want query error", err)
+		}
+	})
+
+	t.Run("default conversation begin", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{beginErr: errDriver})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want begin error", err)
+		}
+	})
+
+	t.Run("default conversation query", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want query error", err)
+		}
+	})
+
+	t.Run("default conversation existing commit", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{
+					columns: conversationColumns,
+					rows: [][]driver.Value{{
+						int64(10),
+						int64(1),
+						"Default",
+						int64(1),
+						formatTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+					}},
+				}, nil
+			},
+			commitErr: errDriver,
+		})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want commit error", err)
+		}
+	})
+
+	t.Run("default conversation insert commit", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{columns: conversationColumns}, nil
+			},
+			commitErr: errDriver,
+		})
+		if _, err := store.DefaultConversationForUser(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("DefaultConversationForUser error = %v, want commit error", err)
+		}
+	})
+
+	t.Run("messages query", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return nil, errDriver
+			},
+		})
+		if _, err := store.Messages(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("Messages error = %v, want query error", err)
+		}
+	})
+
+	t.Run("messages scan", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{
+					columns: []string{"role", "parts_json"},
+					rows:    [][]driver.Value{{int64(1), `[]`}},
+				}, nil
+			},
+		})
+		if _, err := store.Messages(ctx, 1); err == nil {
+			t.Fatalf("Messages scan error = nil, want error")
+		}
+	})
+
+	t.Run("messages rows", func(t *testing.T) {
+		store := newScriptedSQLite(t, &scriptedSQLScenario{
+			query: func(string, []driver.NamedValue) (driver.Rows, error) {
+				return &scriptedRows{columns: []string{"role", "parts_json"}, err: errDriver}, nil
+			},
+		})
+		if _, err := store.Messages(ctx, 1); !errors.Is(err, errDriver) {
+			t.Fatalf("Messages error = %v, want rows error", err)
+		}
+	})
+}
+
 func newMigratedTestSQLite(t *testing.T) *SQLite {
 	t.Helper()
 	store := newTestSQLite(t)
@@ -495,4 +824,162 @@ func createTestUser(t *testing.T, store *SQLite, username string) User {
 		t.Fatalf("CreateUser(%q) error = %v, want nil", username, err)
 	}
 	return user
+}
+
+func validSessionParams(id string) CreateSessionParams {
+	return CreateSessionParams{
+		ID:         id,
+		SecretHash: []byte("secret"),
+		CSRFToken:  "csrf",
+		ExpiresAt:  time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		CreatedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+var conversationColumns = []string{"id", "user_id", "title", "is_default", "created_at"}
+
+func maxSequenceQuery(string, []driver.NamedValue) (driver.Rows, error) {
+	return &scriptedRows{
+		columns: []string{"max_sequence"},
+		rows:    [][]driver.Value{{int64(0)}},
+	}, nil
+}
+
+var (
+	registerScriptedSQLDriver sync.Once
+	scriptedSQLScenarios      sync.Map
+)
+
+type scriptedSQLScenario struct {
+	exec      func(string, []driver.NamedValue) (driver.Result, error)
+	query     func(string, []driver.NamedValue) (driver.Rows, error)
+	beginErr  error
+	commitErr error
+}
+
+type scriptedSQLDriver struct{}
+
+func (scriptedSQLDriver) Open(name string) (driver.Conn, error) {
+	value, ok := scriptedSQLScenarios.Load(name)
+	if !ok {
+		return nil, errors.New("missing scripted SQL scenario")
+	}
+	return scriptedSQLConn{scenario: value.(*scriptedSQLScenario)}, nil
+}
+
+type scriptedSQLConn struct {
+	scenario *scriptedSQLScenario
+}
+
+func (c scriptedSQLConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("scripted SQL prepare is unsupported")
+}
+
+func (c scriptedSQLConn) Close() error {
+	return nil
+}
+
+func (c scriptedSQLConn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+
+func (c scriptedSQLConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	if c.scenario.beginErr != nil {
+		return nil, c.scenario.beginErr
+	}
+	return scriptedSQLTx{scenario: c.scenario}, nil
+}
+
+func (c scriptedSQLConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.scenario.exec != nil {
+		return c.scenario.exec(query, args)
+	}
+	return scriptedSQLResult{}, nil
+}
+
+func (c scriptedSQLConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.scenario.query != nil {
+		return c.scenario.query(query, args)
+	}
+	return &scriptedRows{}, nil
+}
+
+type scriptedSQLTx struct {
+	scenario *scriptedSQLScenario
+}
+
+func (tx scriptedSQLTx) Commit() error {
+	return tx.scenario.commitErr
+}
+
+func (scriptedSQLTx) Rollback() error {
+	return nil
+}
+
+type scriptedSQLResult struct {
+	lastID    int64
+	rows      int64
+	lastIDErr error
+	rowsErr   error
+}
+
+func (r scriptedSQLResult) LastInsertId() (int64, error) {
+	return r.lastID, r.lastIDErr
+}
+
+func (r scriptedSQLResult) RowsAffected() (int64, error) {
+	return r.rows, r.rowsErr
+}
+
+type scriptedRows struct {
+	columns []string
+	rows    [][]driver.Value
+	index   int
+	err     error
+}
+
+func (r *scriptedRows) Columns() []string {
+	if r.columns == nil {
+		return []string{"value"}
+	}
+	return r.columns
+}
+
+func (r *scriptedRows) Close() error {
+	return nil
+}
+
+func (r *scriptedRows) Next(dest []driver.Value) error {
+	if r.index < len(r.rows) {
+		copy(dest, r.rows[r.index])
+		r.index++
+		return nil
+	}
+	if r.err != nil {
+		return r.err
+	}
+	return io.EOF
+}
+
+func newScriptedSQLite(t *testing.T, scenario *scriptedSQLScenario) *SQLite {
+	t.Helper()
+	registerScriptedSQLDriver.Do(func() {
+		sql.Register("pyttechat_storage_scripted", scriptedSQLDriver{})
+	})
+	name := strings.ReplaceAll(t.Name(), "/", "-")
+	scriptedSQLScenarios.Store(name, scenario)
+	t.Cleanup(func() {
+		scriptedSQLScenarios.Delete(name)
+	})
+	db, err := sql.Open("pyttechat_storage_scripted", name)
+	if err != nil {
+		t.Fatalf("scripted sql.Open error = %v, want nil", err)
+	}
+	store := NewSQLiteForDB(db)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("scripted Close error = %v", err)
+		}
+	})
+	return store
 }

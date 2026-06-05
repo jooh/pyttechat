@@ -447,6 +447,14 @@ func TestSSEHelpersHandleErrorsAndSequenceFallbacks(t *testing.T) {
 	if got := chunkText(""); len(got) != 1 || got[0] != "" {
 		t.Fatalf("chunkText empty = %#v, want one empty chunk", got)
 	}
+	if got := fakeReasoningText("  "); got != "Preparing a concise fake response." {
+		t.Fatalf("fakeReasoningText empty = %q, want concise default", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitStreamDelay(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitStreamDelay canceled error = %v, want context canceled", err)
+	}
 }
 
 func TestStreamingStopsCleanlyOnRequestCancellation(t *testing.T) {
@@ -469,6 +477,25 @@ func TestStreamingStopsCleanlyOnRequestCancellation(t *testing.T) {
 	}
 	if strings.Contains(writer.body.String(), "[DONE]") {
 		t.Fatalf("body contains terminal marker after cancellation:\n%s", writer.body.String())
+	}
+}
+
+func TestStreamingStopsWhenCanceledDuringDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	resp := buildResponse(requestBody{Input: json.RawMessage(`"hello world"`)})
+	writer := &delayedCancelResponseWriter{
+		header: http.Header{},
+		cancel: cancel,
+		delay:  time.Millisecond,
+	}
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/responses", nil)
+
+	err := writeStreamingResponseWithOptions(writer, request, resp, Options{StreamDelay: 50 * time.Millisecond})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeStreamingResponseWithOptions error = %v, want context canceled", err)
+	}
+	if writer.flushes == 0 {
+		t.Fatalf("flush count = 0, want first event before cancellation")
 	}
 }
 
@@ -702,5 +729,34 @@ func (w *cancelAfterFlushResponseWriter) Flush() {
 	w.flushes++
 	if w.flushes == w.cancelAt {
 		w.cancel()
+	}
+}
+
+type delayedCancelResponseWriter struct {
+	header  http.Header
+	body    strings.Builder
+	cancel  context.CancelFunc
+	delay   time.Duration
+	flushes int
+}
+
+func (w *delayedCancelResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *delayedCancelResponseWriter) WriteHeader(int) {
+}
+
+func (w *delayedCancelResponseWriter) Write(data []byte) (int, error) {
+	return w.body.Write(data)
+}
+
+func (w *delayedCancelResponseWriter) Flush() {
+	w.flushes++
+	if w.flushes == 1 {
+		go func() {
+			time.Sleep(w.delay)
+			w.cancel()
+		}()
 	}
 }

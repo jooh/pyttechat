@@ -36,6 +36,11 @@ var embeddedFiles embed.FS
 
 var randomReader io.Reader = rand.Reader
 var timeNow = func() time.Time { return time.Now().UTC() }
+var newMarkdownRenderer = func() assistantRenderer { return markdown.NewRenderer() }
+
+type assistantRenderer interface {
+	Render(string) (template.HTML, error)
+}
 
 type Options struct {
 	Client              llm.Client
@@ -56,7 +61,7 @@ type Server struct {
 	auth            auth.WebService
 	registration    bool
 	template        *template.Template
-	markdown        *markdown.Renderer
+	markdown        assistantRenderer
 	assets          http.Handler
 
 	mu       sync.Mutex
@@ -76,7 +81,7 @@ type browserSession struct {
 
 func NewServer(opts Options) *Server {
 	assets, _ := fs.Sub(embeddedFiles, "assets")
-	renderer := markdown.NewRenderer()
+	renderer := newMarkdownRenderer()
 	tmpl := template.Must(template.ParseFS(embeddedFiles, "templates/*.html"))
 	return &Server{
 		client:          opts.Client,
@@ -708,7 +713,7 @@ type viewStatus struct {
 	ContentID string `json:"content_id,omitempty"`
 }
 
-func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
+func viewMessages(messages []llm.Message, renderer assistantRenderer) []viewMessage {
 	out := make([]viewMessage, 0, len(messages))
 	for messageIndex, message := range messages {
 		text := message.Text()
@@ -780,7 +785,7 @@ func reasoningDisplayText(part llm.Part) string {
 	return strings.TrimSpace(strings.Join(part.Summary, "\n"))
 }
 
-func renderAssistantBody(parts []llm.Part, renderer *markdown.Renderer) (template.HTML, error) {
+func renderAssistantBody(parts []llm.Part, renderer assistantRenderer) (template.HTML, error) {
 	var out strings.Builder
 	for _, part := range parts {
 		switch part.Type {
@@ -1053,7 +1058,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 	}
 	defer stream.Close()
 
-	renderer := markdown.NewRenderer()
+	renderer := newMarkdownRenderer()
 	var fullMarkdown strings.Builder
 	var assistantParts []llm.Part
 	completed := false

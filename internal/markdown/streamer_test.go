@@ -116,3 +116,19 @@ func TestBlockStreamerFlushAndFullMarkdown(t *testing.T) {
 		t.Fatalf("FullMarkdown = %q, want exact stream", got)
 	}
 }
+
+func TestBlockStreamerEdgeHelpers(t *testing.T) {
+	var streamer BlockStreamer
+	if got := streamer.Add(""); got != nil {
+		t.Fatalf("Add empty delta = %#v, want nil", got)
+	}
+	if marker, length, ok := openingFence("``"); ok || marker != 0 || length != 0 {
+		t.Fatalf("openingFence short marker = %q %d %v, want no fence", marker, length, ok)
+	}
+	if marker, length, ok := openingFence("``x"); ok || marker != 0 || length != 0 {
+		t.Fatalf("openingFence short marker run = %q %d %v, want no fence", marker, length, ok)
+	}
+	if got := blankLineLength("\r\nnext"); got != 2 {
+		t.Fatalf("blankLineLength CRLF = %d, want 2", got)
+	}
+}
