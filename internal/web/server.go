@@ -37,6 +37,10 @@ var embeddedFiles embed.FS
 var randomReader io.Reader = rand.Reader
 var timeNow = func() time.Time { return time.Now().UTC() }
 
+type assistantRenderer interface {
+	Render(string) (template.HTML, error)
+}
+
 type Options struct {
 	Client              llm.Client
 	Model               string
@@ -56,7 +60,7 @@ type Server struct {
 	auth            auth.WebService
 	registration    bool
 	template        *template.Template
-	markdown        *markdown.Renderer
+	markdown        assistantRenderer
 	assets          http.Handler
 
 	mu       sync.Mutex
@@ -195,7 +199,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 	session.turns[turn.id] = turn
 	session.mu.Unlock()
 
-	go turn.run(session.chat, chat.SendOptions{
+	go turn.run(session.chat, chat.SendOptions{ //nolint:contextcheck // turn jobs use their own cancelable context and outlive the request.
 		Model:                 s.model,
 		ReasoningEffort:       s.reasoningEffort,
 		RenderingInstructions: chat.WebRenderingInstructions(),
@@ -353,7 +357,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if parseErr := r.ParseForm(); parseErr != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -424,7 +428,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if parseErr := r.ParseForm(); parseErr != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -645,6 +649,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, value string, expires t
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	// #nosec G124 -- CookieSecure is configurable so local HTTP development can clear cookies; production should enable it.
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -708,7 +713,7 @@ type viewStatus struct {
 	ContentID string `json:"content_id,omitempty"`
 }
 
-func viewMessages(messages []llm.Message, renderer *markdown.Renderer) []viewMessage {
+func viewMessages(messages []llm.Message, renderer assistantRenderer) []viewMessage {
 	out := make([]viewMessage, 0, len(messages))
 	for messageIndex, message := range messages {
 		text := message.Text()
@@ -780,7 +785,7 @@ func reasoningDisplayText(part llm.Part) string {
 	return strings.TrimSpace(strings.Join(part.Summary, "\n"))
 }
 
-func renderAssistantBody(parts []llm.Part, renderer *markdown.Renderer) (template.HTML, error) {
+func renderAssistantBody(parts []llm.Part, renderer assistantRenderer) (template.HTML, error) {
 	var out strings.Builder
 	for _, part := range parts {
 		switch part.Type {
@@ -801,6 +806,7 @@ func renderAssistantBody(parts []llm.Part, renderer *markdown.Renderer) (templat
 			out.WriteString(renderAttachmentPart(part))
 		}
 	}
+	// #nosec G203 -- message parts are sanitized by the markdown renderer or escaped by typed part renderers.
 	return template.HTML(out.String()), nil
 }
 
@@ -1167,6 +1173,7 @@ func escapedPlainTextHTML(text string) template.HTML {
 	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
 	escaped = strings.ReplaceAll(escaped, "\r", "\n")
 	escaped = strings.ReplaceAll(escaped, "\n", "<br>\n")
+	// #nosec G203 -- text is escaped before adding trusted line break markup.
 	return template.HTML(escaped)
 }
 

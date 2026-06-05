@@ -128,8 +128,8 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				return err
 			}
 			defer store.Close()
-			if err := store.Migrate(ctx); err != nil {
-				return err
+			if migrateErr := store.Migrate(ctx); migrateErr != nil {
+				return migrateErr
 			}
 			authService := auth.NewService(auth.Options{
 				Store:      store,
@@ -273,9 +273,9 @@ func newCLIChatSession(ctx context.Context, opts rootOptions) (*chat.Session, fu
 	closeStore := func() {
 		_ = store.Close()
 	}
-	if err := store.Migrate(ctx); err != nil {
+	if migrateErr := store.Migrate(ctx); migrateErr != nil {
 		closeStore()
-		return nil, func() {}, err
+		return nil, func() {}, migrateErr
 	}
 	authService := auth.NewService(auth.Options{
 		Store:      store,

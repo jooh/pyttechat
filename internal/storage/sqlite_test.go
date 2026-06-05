@@ -39,9 +39,9 @@ func TestSQLiteOpenDSNAndDirectoryHandling(t *testing.T) {
 		t.Fatalf("sqliteDSN empty path error = %v, want ErrInvalidArgument", err)
 	}
 
-	defaultDSN, err := sqliteDSN("  ")
-	if err != nil {
-		t.Fatalf("sqliteDSN blank error = %v, want nil", err)
+	defaultDSN, defaultErr := sqliteDSN("  ")
+	if defaultErr != nil {
+		t.Fatalf("sqliteDSN blank error = %v, want nil", defaultErr)
 	}
 	if !strings.Contains(defaultDSN, ".cache/pyttechat/pyttechat.db") {
 		t.Fatalf("default DSN = %q, want default cache database path", defaultDSN)
@@ -71,20 +71,20 @@ func TestSQLiteOpenDSNAndDirectoryHandling(t *testing.T) {
 		t.Fatalf("nested database dir stat = %#v, %v; want directory", info, err)
 	}
 
-	memory, err := OpenSQLite(context.Background(), "sqlite://:memory:")
-	if err != nil {
-		t.Fatalf("OpenSQLite memory error = %v, want nil", err)
+	memory, memoryErr := OpenSQLite(context.Background(), "sqlite://:memory:")
+	if memoryErr != nil {
+		t.Fatalf("OpenSQLite memory error = %v, want nil", memoryErr)
 	}
-	if err := memory.Migrate(context.Background()); err != nil {
-		t.Fatalf("memory Migrate error = %v, want nil", err)
+	if migrateErr := memory.Migrate(context.Background()); migrateErr != nil {
+		t.Fatalf("memory Migrate error = %v, want nil", migrateErr)
 	}
-	if err := memory.Close(); err != nil {
-		t.Fatalf("memory Close error = %v, want nil", err)
+	if closeErr := memory.Close(); closeErr != nil {
+		t.Fatalf("memory Close error = %v, want nil", closeErr)
 	}
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open memory error = %v, want nil", err)
+	db, openErr := sql.Open("sqlite", ":memory:")
+	if openErr != nil {
+		t.Fatalf("sql.Open memory error = %v, want nil", openErr)
 	}
 	store := NewSQLiteForDB(db)
 	if err := store.Migrate(context.Background()); err != nil {
@@ -92,6 +92,22 @@ func TestSQLiteOpenDSNAndDirectoryHandling(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("NewSQLiteForDB Close error = %v, want nil", err)
+	}
+}
+
+func TestSQLiteOpenPropagatesSetupFailures(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("file"), 0o600); err != nil {
+		t.Fatalf("write blocker file error = %v, want nil", err)
+	}
+	if _, err := OpenSQLite(context.Background(), "sqlite://"+filepath.Join(blocker, "pyttechat.db")); err == nil {
+		t.Fatalf("OpenSQLite directory setup error = nil, want error")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := OpenSQLite(ctx, "sqlite://:memory:"); err == nil {
+		t.Fatalf("OpenSQLite canceled setup error = nil, want error")
 	}
 }
 
@@ -207,8 +223,8 @@ func TestSQLiteSessionsSupportAnonymousAuthenticatedRotateAndDelete(t *testing.T
 	if rotated.ID != "session-auth" || rotated.UserID != user.ID || string(rotated.SecretHash) != "auth-secret-hash" || rotated.CSRFToken != "csrf-auth" {
 		t.Fatalf("rotated session = %#v, want authenticated replacement", rotated)
 	}
-	if _, err := store.SessionByID(ctx, anonymous.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("old SessionByID error = %v, want ErrNotFound", err)
+	if _, lookupErr := store.SessionByID(ctx, anonymous.ID); !errors.Is(lookupErr, ErrNotFound) {
+		t.Fatalf("old SessionByID error = %v, want ErrNotFound", lookupErr)
 	}
 
 	got, err := store.SessionByID(ctx, rotated.ID)
@@ -334,11 +350,11 @@ func TestSQLiteMessagesAreOrderedAndPartsJSONRoundTrips(t *testing.T) {
 			{Type: llm.PartImage, URL: "/assets/app.css", Filename: "image.png", Width: 10, Height: 20},
 		},
 	}
-	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), firstAssistant); err != nil {
-		t.Fatalf("AppendTurn first error = %v, want nil", err)
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), firstAssistant); appendErr != nil {
+		t.Fatalf("AppendTurn first error = %v, want nil", appendErr)
 	}
-	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); err != nil {
-		t.Fatalf("AppendTurn second error = %v, want nil", err)
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); appendErr != nil {
+		t.Fatalf("AppendTurn second error = %v, want nil", appendErr)
 	}
 
 	messages, err := store.Messages(ctx, conversation.ID)

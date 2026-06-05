@@ -1,9 +1,17 @@
 package markdown
 
 import (
+	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
+
+	gast "github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	gmrenderer "github.com/yuin/goldmark/renderer"
+	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
 )
 
 func TestRendererRenderMarkdownAndGFM(t *testing.T) {
@@ -415,6 +423,33 @@ func TestRendererRenderBlockUsesSamePolicy(t *testing.T) {
 	}
 }
 
+func TestRendererPropagatesConversionErrors(t *testing.T) {
+	renderer := NewRenderer()
+	renderer.markdown = failingMarkdown{}
+
+	if _, err := renderer.Render("hello"); err == nil {
+		t.Fatalf("Render error = nil, want conversion error")
+	}
+	if _, err := renderer.renderMarkdownSegment("hello"); err == nil {
+		t.Fatalf("renderMarkdownSegment error = nil, want conversion error")
+	}
+}
+
+func TestRendererPropagatesArtifactRenderErrors(t *testing.T) {
+	renderer := NewRenderer()
+	renderer.markdown = &sequenceMarkdown{
+		errs: []error{nil, errors.New("artifact render failed")},
+	}
+
+	_, err := renderer.renderWithArtifacts(`:::artifact type="text/markdown"
+hello
+:::
+`)
+	if err == nil {
+		t.Fatalf("renderWithArtifacts error = nil, want artifact render error")
+	}
+}
+
 func TestRendererPrivateHelpersCoverParserBranches(t *testing.T) {
 	if block, ok := startsFence("    ```go\n"); ok || block.open {
 		t.Fatalf("startsFence indented = %#v, %v; want no fence", block, ok)
@@ -434,4 +469,66 @@ func TestRendererPrivateHelpersCoverParserBranches(t *testing.T) {
 	if got := string(escapedCodeBlock("<tag>", "")); !strings.Contains(got, "&lt;tag&gt;") || strings.Contains(got, `class="`) {
 		t.Fatalf("escapedCodeBlock without class = %q, want escaped plain code", got)
 	}
+	var placeholder strings.Builder
+	placeholder.WriteString("before")
+	writeArtifactPlaceholder(&placeholder, "MARKER")
+	if got := placeholder.String(); !strings.Contains(got, "before\n\nMARKER\n\n") {
+		t.Fatalf("writeArtifactPlaceholder = %q, want blank line before marker", got)
+	}
+	if got := decorateCitations("<broken 【turn1search2】"); !strings.Contains(got, `data-citation="turn1search2"`) {
+		t.Fatalf("decorateCitations malformed tag = %q, want decorated text", got)
+	}
+	newSuperscriptNode().Dump([]byte("x"), 0)
+	newSubscriptNode().Dump([]byte("x"), 0)
+	p := newSupersubParser('^', newSuperscriptNode)
+	if node := p.Parse(gast.NewDocument(), text.NewReader([]byte("plain")), parser.NewContext()); node != nil {
+		t.Fatalf("supersub parser wrong marker = %#v, want nil", node)
+	}
+	if renderer := newSupersubHTMLRenderer(goldmarkhtml.WithUnsafe()); renderer == nil {
+		t.Fatalf("newSupersubHTMLRenderer returned nil")
+	}
 }
+
+type failingMarkdown struct{}
+
+func (failingMarkdown) Convert([]byte, io.Writer, ...parser.ParseOption) error {
+	return errors.New("convert failed")
+}
+
+func (failingMarkdown) Parser() parser.Parser {
+	return nil
+}
+
+func (failingMarkdown) SetParser(parser.Parser) {}
+
+func (failingMarkdown) Renderer() gmrenderer.Renderer {
+	return nil
+}
+
+func (failingMarkdown) SetRenderer(gmrenderer.Renderer) {}
+
+type sequenceMarkdown struct {
+	errs  []error
+	calls int
+}
+
+func (m *sequenceMarkdown) Convert([]byte, io.Writer, ...parser.ParseOption) error {
+	if m.calls >= len(m.errs) {
+		return nil
+	}
+	err := m.errs[m.calls]
+	m.calls++
+	return err
+}
+
+func (sequenceMarkdown) Parser() parser.Parser {
+	return nil
+}
+
+func (sequenceMarkdown) SetParser(parser.Parser) {}
+
+func (sequenceMarkdown) Renderer() gmrenderer.Renderer {
+	return nil
+}
+
+func (sequenceMarkdown) SetRenderer(gmrenderer.Renderer) {}

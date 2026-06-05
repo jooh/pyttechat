@@ -134,6 +134,14 @@ make ci
 
 The Makefile installs pinned Go tools into `.bin/` when needed.
 
+`make coverage` enforces 95.0% Go statement coverage. Container-level smoke coverage is kept separate from `all-tests`/`ci` because it requires Docker:
+
+```sh
+make container-smoke
+```
+
+The CI workflow in `.github/workflows/ci.yml` runs `make ci`, and the smoke workflow in `.github/workflows/smoke.yml` runs container smoke as its own CI job.
+
 ## Reference Skills
 
 Initialize the read-only reference implementations after cloning:

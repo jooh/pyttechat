@@ -311,8 +311,8 @@ func TestAskCommandAuthenticatesWithPasswordFile(t *testing.T) {
 		t.Fatalf("OpenSQLite error = %v, want nil", err)
 	}
 	defer store.Close()
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate error = %v, want nil", err)
+	if migrateErr := store.Migrate(context.Background()); migrateErr != nil {
+		t.Fatalf("Migrate error = %v, want nil", migrateErr)
 	}
 	authService := auth.NewService(auth.Options{Store: store, BCryptCost: bcrypt.MinCost})
 	user, err := authService.Authenticate(context.Background(), "file-user", "correct horse")
@@ -688,6 +688,28 @@ func TestChatCommandReturnsPrintStreamFailure(t *testing.T) {
 	code := Execute(context.Background(), []string{"chat"}, strings.NewReader("hello\n"), failingWriter{}, io.Discard)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
+func TestCLIPasswordReturnsFileReadFailure(t *testing.T) {
+	t.Setenv("PYTTECHAT_USERNAME", "alice")
+	t.Setenv("PYTTECHAT_PASSWORD", "")
+	t.Setenv("PYTTECHAT_PASSWORD_FILE", filepath.Join(t.TempDir(), "missing-password"))
+	t.Setenv("PYTTECHAT_DATABASE_URL", "sqlite://"+t.TempDir()+"/pyttechat.db")
+	t.Setenv("PYTTECHAT_LLM_PROXY_URL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TOKEN", "")
+	t.Setenv("PYTTECHAT_MODEL", "")
+	t.Setenv("PYTTECHAT_LLM_PROXY_TIMEOUT", "")
+	t.Setenv("PYTTECHAT_SESSION_TTL", "")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Execute(context.Background(), []string{"ask", "hello"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "missing-password") {
+		t.Fatalf("stderr = %q, want missing password file path", stderr.String())
 	}
 }
 
@@ -1301,21 +1323,6 @@ func fetchServedLoginCSRFToken(t *testing.T, client *http.Client, baseURL string
 	token := csrfFromServedHTML(body)
 	if token == "" {
 		t.Fatalf("login CSRF token is empty in body %q", body)
-	}
-	return token
-}
-
-func fetchServedCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
-	t.Helper()
-
-	response, body := doServedRequest(t, client, newServedRequest(t, http.MethodGet, baseURL+"/", nil))
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET / status = %d, want 200; body = %q", response.StatusCode, body)
-	}
-	token := csrfFromServedHTML(body)
-	if token == "" {
-		t.Fatalf("CSRF token is empty in body %q", body)
 	}
 	return token
 }

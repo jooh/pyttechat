@@ -27,8 +27,8 @@ func OpenSQLite(ctx context.Context, databaseURL string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureSQLiteDir(dsn); err != nil {
-		return nil, err
+	if dirErr := ensureSQLiteDir(dsn); dirErr != nil {
+		return nil, dirErr
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -207,8 +207,8 @@ func (s *SQLite) RotateSession(ctx context.Context, oldSessionID string, params 
 	defer rollback(tx)
 
 	if strings.TrimSpace(oldSessionID) != "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE id = ?`, oldSessionID); err != nil {
-			return Session{}, err
+		if _, deleteErr := tx.ExecContext(ctx, `DELETE FROM web_sessions WHERE id = ?`, oldSessionID); deleteErr != nil {
+			return Session{}, deleteErr
 		}
 	}
 	session, err := s.createSession(ctx, tx, params)
@@ -304,8 +304,8 @@ func (s *SQLite) DefaultConversationForUser(ctx context.Context, userID int64) (
 
 	conversation, err := conversationByDefault(ctx, tx, userID)
 	if err == nil {
-		if err := tx.Commit(); err != nil {
-			return Conversation{}, err
+		if commitErr := tx.Commit(); commitErr != nil {
+			return Conversation{}, commitErr
 		}
 		return conversation, nil
 	}

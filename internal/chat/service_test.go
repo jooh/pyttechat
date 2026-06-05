@@ -173,6 +173,24 @@ func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestPersistentSessionFallsBackWithoutStore(t *testing.T) {
+	session, err := NewPersistentService(dummy.NewClient(), nil).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+	if session.store != nil || session.conversationID != 0 {
+		t.Fatalf("session = %#v, want ephemeral session", session)
+	}
+}
+
+func TestPersistentSessionReturnsHistoryLoadFailure(t *testing.T) {
+	errLoad := errors.New("load failed")
+	_, err := NewPersistentService(dummy.NewClient(), &chatStore{messagesErr: errLoad}).NewPersistedSession(context.Background(), 42)
+	if !errors.Is(err, errLoad) {
+		t.Fatalf("NewPersistedSession error = %v, want load error", err)
+	}
+}
+
 func TestPersistentSessionDoesNotAppendFailedOrAbortedTurn(t *testing.T) {
 	t.Run("failed stream", func(t *testing.T) {
 		store := &chatStore{}
@@ -562,14 +580,20 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 		userMessage: llm.NewTextMessage(llm.RoleUser, "hello"),
 	}
 
-	turn.finalize()
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("finalize before completion error = %v, want nil", err)
+	}
 	if got := len(session.Messages()); got != 0 {
 		t.Fatalf("messages before completion = %d, want 0", got)
 	}
 
 	turn.completed = true
-	turn.finalize()
-	turn.finalize()
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("finalize after completion error = %v, want nil", err)
+	}
+	if err := turn.finalize(); err != nil {
+		t.Fatalf("second finalize error = %v, want nil", err)
+	}
 	if got := len(session.Messages()); got != 2 {
 		t.Fatalf("messages after double finalize = %d, want exactly 2", got)
 	}
@@ -650,9 +674,10 @@ func (*eventStream) Close() error {
 }
 
 type chatStore struct {
-	messages  []llm.Message
-	appended  []appendedTurn
-	appendErr error
+	messages    []llm.Message
+	messagesErr error
+	appended    []appendedTurn
+	appendErr   error
 }
 
 type appendedTurn struct {
@@ -662,6 +687,9 @@ type appendedTurn struct {
 }
 
 func (s *chatStore) Messages(context.Context, int64) ([]llm.Message, error) {
+	if s.messagesErr != nil {
+		return nil, s.messagesErr
+	}
 	return llm.CloneMessages(s.messages), nil
 }
 

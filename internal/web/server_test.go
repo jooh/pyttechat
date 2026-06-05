@@ -335,6 +335,23 @@ func TestAuthFormsRenderValidationAndParseErrors(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsInvalidCSRF(t *testing.T) {
+	server := httptest.NewServer(newAuthTestHandler(t, dummy.NewClient(), true, false))
+	defer server.Close()
+	client := testHTTPClient(t)
+
+	response, body := do(t, client, newFormRequest(t, http.MethodPost, server.URL+"/login", map[string]string{
+		"csrf_token": "wrong",
+		"username":   "alice",
+		"password":   "correct horse",
+	}))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /login status = %d, want 403; body = %q", response.StatusCode, body)
+	}
+}
+
 func TestAuthSessionExpiryInvalidCookieAndProtectedAPIs(t *testing.T) {
 	store := newWebTestStore(t)
 	now := time.Now().UTC().Add(time.Hour)
@@ -680,6 +697,43 @@ func TestAuthPerUserHistoryIsolationAndPersistedReload(t *testing.T) {
 	if !strings.Contains(body, "alice prompt") || !strings.Contains(body, "first answer") {
 		t.Fatalf("alice restarted body = %q, want persisted history", body)
 	}
+}
+
+func TestSessionHelpersCoverLegacyAnonymousAndPersistedLoadFailures(t *testing.T) {
+	t.Run("public session falls back to legacy when auth disabled", func(t *testing.T) {
+		handler := NewServer(Options{Client: dummy.NewClient()})
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		recorder := httptest.NewRecorder()
+
+		session, err := handler.publicSession(recorder, request)
+		if err != nil {
+			t.Fatalf("publicSession error = %v, want nil", err)
+		}
+		if session == nil || session.id == "" {
+			t.Fatalf("session = %#v, want legacy browser session", session)
+		}
+	})
+
+	t.Run("authenticated session rejects anonymous stored session", func(t *testing.T) {
+		handler := newAuthTestHandler(t, dummy.NewClient(), true, false)
+		publicRecorder := httptest.NewRecorder()
+		publicRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		if _, err := handler.publicSession(publicRecorder, publicRequest); err != nil {
+			t.Fatalf("publicSession error = %v, want nil", err)
+		}
+		cookies := publicRecorder.Result().Cookies()
+		if len(cookies) == 0 {
+			t.Fatalf("publicSession did not set a cookie")
+		}
+
+		request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		request.AddCookie(cookies[0])
+		_, err := handler.authenticatedSession(httptest.NewRecorder(), request)
+		if !errors.Is(err, auth.ErrInvalidSession) {
+			t.Fatalf("authenticatedSession error = %v, want invalid session", err)
+		}
+	})
+
 }
 
 func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
@@ -1957,6 +2011,24 @@ func TestViewMessagesRendersStructuredAssistantParts(t *testing.T) {
 	}
 }
 
+func TestViewMessagesFallsBackWhenRendererFails(t *testing.T) {
+	views := viewMessages([]llm.Message{
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: "<unsafe>"},
+			},
+		},
+	}, errorRenderer{})
+
+	if len(views) != 1 {
+		t.Fatalf("view count = %d, want 1", len(views))
+	}
+	if !strings.Contains(string(views[0].HTML), "&lt;unsafe&gt;") {
+		t.Fatalf("HTML = %q, want escaped fallback text", views[0].HTML)
+	}
+}
+
 func TestViewMessagesKeepsVisibleNonTextMessages(t *testing.T) {
 	messages := viewMessages([]llm.Message{
 		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartReasoning, Text: "visible thinking"}}},
@@ -2177,6 +2249,34 @@ func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
 			t.Fatalf("replay = %#v terminal=%v, want terminal stream-error", replay, terminal)
 		}
 	})
+}
+
+func TestTurnJobIgnoresEmptyTextDeltas(t *testing.T) {
+	turn := newTestTurnJob(t)
+	session := chat.NewService(webSequenceClient{events: []llm.Event{
+		{Type: llm.EventTextDelta, Delta: ""},
+		{Type: llm.EventCompleted},
+	}}).NewSession()
+
+	turn.run(session, chat.SendOptions{})
+
+	replay, _, terminal := turn.subscribe(0)
+	if !terminal || hasReplayEvent(replay, "preview") || !hasReplayEvent(replay, "done") {
+		t.Fatalf("replay = %#v terminal=%v, want only terminal done event", replay, terminal)
+	}
+}
+
+func TestMergeCompletedOutputPartSkipsTrailingNonReasoningParts(t *testing.T) {
+	parts := []llm.Part{
+		{Type: llm.PartReasoning, Text: "old"},
+		{Type: llm.PartText, Text: "answer"},
+	}
+
+	mergeCompletedOutputPart(&parts, llm.Part{Type: llm.PartReasoning, Text: "new"})
+
+	if parts[0].Text != "new" || parts[1].Text != "answer" {
+		t.Fatalf("parts = %#v, want reasoning updated before trailing text", parts)
+	}
 }
 
 func TestTurnJobFinishClosesSubscribersWithoutTerminalEvent(t *testing.T) {
@@ -2618,22 +2718,6 @@ type testDonePayload struct {
 	CompletedAt        string       `json:"completed_at"`
 }
 
-func decodeHTMLFrame(t *testing.T, frame sseFrame) testHTMLPayload {
-	t.Helper()
-
-	if frame.Event != "html" {
-		t.Fatalf("frame event = %q, want html: %#v", frame.Event, frame)
-	}
-	var payload testHTMLPayload
-	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
-		t.Fatalf("decode html frame error = %v; frame = %#v", err, frame)
-	}
-	if payload.TurnID == "" || payload.AssistantMessageID == "" {
-		t.Fatalf("html payload = %#v, want ids", payload)
-	}
-	return payload
-}
-
 func decodePreviewFrame(t *testing.T, frame sseFrame) testHTMLPayload {
 	t.Helper()
 
@@ -2683,18 +2767,6 @@ func assertSafeRenderedHTML(t *testing.T, html string) {
 		if strings.Contains(html, unsafe) {
 			t.Fatalf("rendered HTML = %q, did not expect unsafe substring %q", html, unsafe)
 		}
-	}
-}
-
-func waitSSEFrame(t *testing.T, frames <-chan sseFrame) sseFrame {
-	t.Helper()
-
-	select {
-	case frame := <-frames:
-		return frame
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for SSE frame")
-		return sseFrame{}
 	}
 }
 
@@ -3135,4 +3207,10 @@ func hasReplayEvent(events []streamEvent, name string) bool {
 		}
 	}
 	return false
+}
+
+type errorRenderer struct{}
+
+func (errorRenderer) Render(string) (template.HTML, error) {
+	return "", errors.New("render failed")
 }
