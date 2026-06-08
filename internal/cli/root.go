@@ -204,6 +204,7 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 				Model:                 opts.model,
 				ReasoningEffort:       opts.reasoningEffort,
 				RenderingInstructions: chat.WebRenderingInstructions(),
+				TelemetryComponent:    observability.ComponentCLI,
 			})
 			if err != nil {
 				if errors.Is(err, chat.ErrEmptyPrompt) {
@@ -212,7 +213,7 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 				return err
 			}
 
-			return printStream(cmd.Context(), stream, stdout, stderr)
+			return printStream(stream, stdout, stderr)
 		},
 	}
 }
@@ -234,6 +235,7 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 					Model:                 opts.model,
 					ReasoningEffort:       opts.reasoningEffort,
 					RenderingInstructions: chat.WebRenderingInstructions(),
+					TelemetryComponent:    observability.ComponentCLI,
 				})
 				if err != nil {
 					if errors.Is(err, chat.ErrEmptyPrompt) {
@@ -241,7 +243,7 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 					}
 					return err
 				}
-				if err := printStream(cmd.Context(), stream, stdout, stderr); err != nil {
+				if err := printStream(stream, stdout, stderr); err != nil {
 					return err
 				}
 			}
@@ -344,9 +346,10 @@ func envBoolDefault(name string, fallback bool) bool {
 	}
 }
 
-func printStream(ctx context.Context, stream *chat.TurnStream, stdout, stderr io.Writer) error {
+func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {
 	defer stream.Close()
 
+	metricsCtx := context.Background()
 	wroteText := false
 	for {
 		event, err := stream.Next()
@@ -359,7 +362,7 @@ func printStream(ctx context.Context, stream *chat.TurnStream, stdout, stderr io
 
 		switch event.Type {
 		case llm.EventTextDelta:
-			observability.LLMStreamEvent(ctx, observability.ComponentCLI, string(event.Type))
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 			if _, err := fmt.Fprint(stdout, event.Delta); err != nil {
 				return err
 			}
@@ -367,12 +370,12 @@ func printStream(ctx context.Context, stream *chat.TurnStream, stdout, stderr io
 				wroteText = true
 			}
 		case llm.EventReasoningDelta:
-			observability.LLMStreamEvent(ctx, observability.ComponentCLI, string(event.Type))
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 			if _, err := fmt.Fprint(stderr, event.Delta); err != nil {
 				return err
 			}
 		case llm.EventOutputItemDone, llm.EventCompleted, llm.EventError:
-			observability.LLMStreamEvent(ctx, observability.ComponentCLI, string(event.Type))
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 		}
 	}
 	if wroteText {
@@ -403,7 +406,6 @@ func newVersionCommand(stdout io.Writer) *cobra.Command {
 }
 
 func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ctx = observability.ContextWithComponent(ctx, observability.ComponentCLI)
 	ctx, span := observability.StartSpan(ctx, "cli.command", observability.ComponentCLI, attribute.String("cli.command.name", cliCommandName(args)))
 	defer span.End()
 

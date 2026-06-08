@@ -183,8 +183,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	turnCtx := observability.ContextWithComponent(context.WithoutCancel(r.Context()), observability.ComponentWeb)
-	turn, err := newTurnJobWithContext(turnCtx, prompt)
+	turn, err := newTurnJobWithContext(context.WithoutCancel(r.Context()), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "turn_error", "could not create turn")
 		return
@@ -205,6 +204,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		Model:                 s.model,
 		ReasoningEffort:       s.reasoningEffort,
 		RenderingInstructions: chat.WebRenderingInstructions(),
+		TelemetryComponent:    observability.ComponentWeb,
 	})
 
 	writeJSON(w, http.StatusCreated, createTurnResponse{
@@ -234,9 +234,9 @@ func (s *Server) handleTurnRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID string) {
-	ctx, span := observability.StartSpan(r.Context(), "chat.turn.stream", observability.ComponentWeb)
+	requestCtx := r.Context()
+	ctx, span := observability.StartSpan(requestCtx, "chat.turn.stream", observability.ComponentWeb)
 	defer span.End()
-	r = r.WithContext(ctx)
 
 	session, err := s.session(w, r)
 	if err != nil {
@@ -286,7 +286,7 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-requestCtx.Done():
 			return
 		case event, ok := <-updates:
 			if !ok {
@@ -302,9 +302,9 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 }
 
 func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID string) {
-	ctx, span := observability.StartSpan(r.Context(), "chat.turn.abort", observability.ComponentWeb)
+	requestCtx := r.Context()
+	_, span := observability.StartSpan(requestCtx, "chat.turn.abort", observability.ComponentWeb)
 	defer span.End()
-	r = r.WithContext(ctx)
 
 	session, err := s.session(w, r)
 	if err != nil {
@@ -325,7 +325,7 @@ func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID 
 		writeJSONError(w, http.StatusNotFound, "turn_not_found", "turn not found")
 		return
 	}
-	if !turn.abort(r.Context()) {
+	if !turn.abort(requestCtx) {
 		writeJSONError(w, http.StatusConflict, "turn_finished", "turn is already finished")
 		return
 	}
@@ -1042,7 +1042,7 @@ func newTurnJob(prompt string) (*turnJob, error) {
 	return newTurnJobWithContext(context.Background(), prompt)
 }
 
-func newTurnJobWithContext(ctx context.Context, prompt string) (*turnJob, error) {
+func newTurnJobWithContext(ctx context.Context, prompt string) (*turnJob, error) { //nolint:contextcheck // turn jobs store a cancelable context because they outlive the create request.
 	turnID, err := randomID("turn")
 	if err != nil {
 		return nil, err
@@ -1058,7 +1058,6 @@ func newTurnJobWithContext(ctx context.Context, prompt string) (*turnJob, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx = observability.ContextWithComponent(ctx, observability.ComponentWeb)
 	ctx, cancel := context.WithCancel(ctx)
 	return &turnJob{
 		id:                 turnID,

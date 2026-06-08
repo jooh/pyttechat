@@ -67,6 +67,7 @@ type SendOptions struct {
 	Model                 string
 	ReasoningEffort       string
 	RenderingInstructions string
+	TelemetryComponent    string
 }
 
 func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*TurnStream, error) {
@@ -75,7 +76,7 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		return nil, ErrEmptyPrompt
 	}
 
-	ctx, span := observability.StartSpan(ctx, "chat.turn.start", "")
+	ctx, span := observability.StartSpan(ctx, "chat.turn.start", opts.TelemetryComponent)
 	startedAt := time.Now()
 	defer span.End()
 
