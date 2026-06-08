@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"example.com/llm-chat-web/internal/buildinfo"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
+	"example.com/llm-chat-web/internal/observability"
 )
 
 type fakeResponsesServer interface {
@@ -26,7 +28,7 @@ var (
 	newServer  = func(addr string, opts fakeprovider.Options) fakeResponsesServer {
 		return &http.Server{
 			Addr:              addr,
-			Handler:           fakeprovider.NewHandlerWithOptions(opts),
+			Handler:           observability.HTTPMiddleware(fakeprovider.NewHandlerWithOptions(opts)),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 	}
@@ -41,7 +43,7 @@ func main() {
 	exit(runCommand(os.Args[1:], os.Stderr))
 }
 
-func run(args []string, stderr io.Writer) int {
+func run(args []string, stderr io.Writer) (code int) {
 	flags := flag.NewFlagSet("fake-responses", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	addr := flags.String("addr", ":8080", "address for the fake Responses API provider")
@@ -52,6 +54,20 @@ func run(args []string, stderr io.Writer) int {
 		}
 		return 2
 	}
+
+	shutdown, err := observability.Init(context.Background(), observability.FromEnv(buildinfo.Snapshot()))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(ctx); err != nil && code == 0 {
+			fmt.Fprintln(stderr, err)
+			code = 1
+		}
+	}()
 
 	server := newServer(*addr, fakeprovider.Options{StreamDelay: *streamDelay})
 	errc := make(chan error, 1)

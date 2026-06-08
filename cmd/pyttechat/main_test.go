@@ -9,6 +9,7 @@ import (
 )
 
 func TestMainDelegatesToCLIExitStatus(t *testing.T) {
+	disableTelemetryEnv(t)
 	originalArgs := os.Args
 	originalExit := exit
 	originalExecute := execute
@@ -39,5 +40,20 @@ func TestMainDelegatesToCLIExitStatus(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotArgs, []string{"version"}) {
 		t.Fatalf("args = %#v, want version", gotArgs)
+	}
+}
+
+func disableTelemetryEnv(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{
+		"OTEL_SERVICE_NAME",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"OTEL_SDK_DISABLED",
+	} {
+		t.Setenv(name, "")
 	}
 }

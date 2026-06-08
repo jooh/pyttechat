@@ -137,6 +137,7 @@ func TestRunTreatsServerClosedAsSuccess(t *testing.T) {
 
 func TestRunPassesStreamDelayOption(t *testing.T) {
 	server := &stubFakeResponsesServer{done: make(chan struct{})}
+	disableTelemetryEnv(t)
 	var gotAddr string
 	var gotOpts fakeprovider.Options
 	original := newServer
@@ -166,6 +167,24 @@ func TestRunPassesStreamDelayOption(t *testing.T) {
 	}
 }
 
+func TestRunStartsWithTelemetryDisabledByDefault(t *testing.T) {
+	server := &stubFakeResponsesServer{shutdownErr: nil}
+	withFakeResponseServer(t, server)
+	sigc := make(chan os.Signal, 1)
+	sigc <- os.Interrupt
+	withSignalChannel(t, sigc)
+	var stderr bytes.Buffer
+
+	code := run([]string{"--addr", "127.0.0.1:0"}, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if server.shutdowns != 1 {
+		t.Fatalf("shutdown count = %d, want 1", server.shutdowns)
+	}
+}
+
 func TestDefaultFactories(t *testing.T) {
 	server := newServer("127.0.0.1:0", fakeprovider.Options{})
 	httpServer, ok := server.(*http.Server)
@@ -185,6 +204,7 @@ func TestDefaultFactories(t *testing.T) {
 
 func withFakeResponseServer(t *testing.T, server *stubFakeResponsesServer) {
 	t.Helper()
+	disableTelemetryEnv(t)
 
 	if server.done == nil {
 		server.done = make(chan struct{})
@@ -196,6 +216,21 @@ func withFakeResponseServer(t *testing.T, server *stubFakeResponsesServer) {
 	t.Cleanup(func() {
 		newServer = original
 	})
+}
+
+func disableTelemetryEnv(t *testing.T) {
+	t.Helper()
+
+	for _, name := range []string{
+		"OTEL_SERVICE_NAME",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"OTEL_SDK_DISABLED",
+	} {
+		t.Setenv(name, "")
+	}
 }
 
 func withSignalChannel(t *testing.T, sigc chan os.Signal) {

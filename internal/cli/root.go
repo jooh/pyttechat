@@ -20,10 +20,12 @@ import (
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 	"example.com/llm-chat-web/internal/llm/openresponses"
+	"example.com/llm-chat-web/internal/observability"
 	"example.com/llm-chat-web/internal/storage"
 	"example.com/llm-chat-web/internal/web"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type rootOptions struct {
@@ -135,7 +137,7 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				Store:      store,
 				SessionTTL: opts.sessionTTL,
 			})
-			handler := web.NewServer(web.Options{
+			handler := observability.HTTPMiddleware(web.NewServer(web.Options{
 				Client:              newLLMClient(*opts),
 				Model:               opts.model,
 				ReasoningEffort:     opts.reasoningEffort,
@@ -143,7 +145,7 @@ func newServeCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command
 				Store:               store,
 				Auth:                authService,
 				RegistrationEnabled: opts.registration,
-			})
+			}))
 			server := newWebServer(opts.webAddr, handler)
 			listener, err := listenTCP(ctx, opts.webAddr)
 			if err != nil {
@@ -202,6 +204,7 @@ func newAskCommand(stdout, stderr io.Writer, opts *rootOptions) *cobra.Command {
 				Model:                 opts.model,
 				ReasoningEffort:       opts.reasoningEffort,
 				RenderingInstructions: chat.WebRenderingInstructions(),
+				TelemetryComponent:    observability.ComponentCLI,
 			})
 			if err != nil {
 				if errors.Is(err, chat.ErrEmptyPrompt) {
@@ -232,6 +235,7 @@ func newChatCommand(stdin io.Reader, stdout, stderr io.Writer, opts *rootOptions
 					Model:                 opts.model,
 					ReasoningEffort:       opts.reasoningEffort,
 					RenderingInstructions: chat.WebRenderingInstructions(),
+					TelemetryComponent:    observability.ComponentCLI,
 				})
 				if err != nil {
 					if errors.Is(err, chat.ErrEmptyPrompt) {
@@ -345,6 +349,7 @@ func envBoolDefault(name string, fallback bool) bool {
 func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {
 	defer stream.Close()
 
+	metricsCtx := context.Background()
 	wroteText := false
 	for {
 		event, err := stream.Next()
@@ -357,6 +362,7 @@ func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {
 
 		switch event.Type {
 		case llm.EventTextDelta:
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 			if _, err := fmt.Fprint(stdout, event.Delta); err != nil {
 				return err
 			}
@@ -364,9 +370,12 @@ func printStream(stream *chat.TurnStream, stdout, stderr io.Writer) error {
 				wroteText = true
 			}
 		case llm.EventReasoningDelta:
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 			if _, err := fmt.Fprint(stderr, event.Delta); err != nil {
 				return err
 			}
+		case llm.EventOutputItemDone, llm.EventCompleted, llm.EventError:
+			observability.LLMStreamEvent(metricsCtx, observability.ComponentCLI, string(event.Type))
 		}
 	}
 	if wroteText {
@@ -397,6 +406,9 @@ func newVersionCommand(stdout io.Writer) *cobra.Command {
 }
 
 func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	ctx, span := observability.StartSpan(ctx, "cli.command", observability.ComponentCLI, attribute.String("cli.command.name", cliCommandName(args)))
+	defer span.End()
+
 	cmd := NewRootCommand(stdin, stdout, stderr) //nolint:contextcheck
 	cmd.SetArgs(args)
 	cmd.SetContext(ctx)
@@ -415,4 +427,17 @@ func Execute(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	return 0
+}
+
+func cliCommandName(args []string) string {
+	for _, arg := range args {
+		switch arg {
+		case "ask", "chat", "serve", "version":
+			return arg
+		}
+	}
+	if len(args) == 0 {
+		return "help"
+	}
+	return "unknown"
 }

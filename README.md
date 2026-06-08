@@ -82,6 +82,42 @@ PYTTECHAT_LLM_PROXY_TOKEN=token-value \
 
 Set `--reasoning-effort` when you want to request model reasoning options. Assistant answer text streams to stdout. Reasoning events, when returned, stream separately to stderr. Proxy requests default to a 5-minute timeout; override it with `--proxy-timeout` or `PYTTECHAT_LLM_PROXY_TIMEOUT`.
 
+## OpenTelemetry
+
+Telemetry is disabled by default. If no OTLP endpoint is configured, `pyttechat` and `fake-responses` run without an OpenTelemetry Collector and use no external telemetry network calls.
+
+To enable traces and metrics locally, run an OpenTelemetry Collector with the provided development config:
+
+```sh
+otelcol --config docs/otel-collector.yaml
+```
+
+Then start the app with an OTLP/gRPC endpoint:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+OTEL_SERVICE_NAME=pyttechat \
+  ./bin/pyttechat serve --addr :3000
+```
+
+Supported telemetry environment variables:
+
+- `OTEL_SERVICE_NAME`: service name, default `pyttechat`.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: shared OTLP endpoint for traces and metrics.
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`: traces-only OTLP endpoint.
+- `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`: metrics-only OTLP endpoint.
+- `OTEL_RESOURCE_ATTRIBUTES`: additional resource attributes, for example `deployment.environment=local`.
+- `OTEL_SDK_DISABLED=true`: force telemetry off.
+
+Emitted signals:
+
+- HTTP server spans and HTTP client spans, including trace context propagation to the LLM proxy.
+- Manual spans for CLI commands, chat turn start, SSE streaming, abort/cancel, OpenResponses proxy requests, stream consumption, and fake provider streaming.
+- Counters for chat turns started/completed/cancelled/failed and streamed LLM/SSE events.
+- Histograms for upstream LLM request duration and chat turn duration.
+
+Do not attach prompt text, user messages, OAuth tokens, API keys, bearer tokens, cookies, session IDs, user IDs, turn IDs, model output, or raw LLM responses to telemetry.
+
 ## Fake OpenResponses Provider
 
 The repo includes a deterministic fake OpenAI-compatible Responses API provider for tests and local development. Prefer `internal/llm/openresponses/fakeprovider.NewHandler()` in Go tests instead of hand-written happy-path SSE stubs. Keep custom `httptest` handlers for malformed streams, auth assertions, and narrow parser edge cases.

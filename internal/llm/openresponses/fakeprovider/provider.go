@@ -11,6 +11,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"example.com/llm-chat-web/internal/observability"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -36,6 +40,9 @@ func NewHandlerWithOptions(opts Options) http.Handler {
 }
 
 func (p provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := observability.StartSpan(r.Context(), "fake_provider.responses.create", observability.ComponentFakeProvider)
+	defer span.End()
+
 	if r.URL.Path != "/v1/responses" {
 		writeJSONError(w, http.StatusNotFound, "not_found", "not found")
 		return
@@ -47,6 +54,7 @@ func (p provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req, err := decodeRequest(r)
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
 		return
 	}
@@ -57,7 +65,13 @@ func (p provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := writeStreamingResponseWithOptions(w, r, resp, p.opts); err != nil && !errors.Is(err, r.Context().Err()) {
+	_, streamSpan := observability.StartSpan(ctx, "fake_provider.stream.write", observability.ComponentFakeProvider)
+	err = writeStreamingResponseWithOptionsSpan(w, r, resp, p.opts, streamSpan)
+	streamSpan.End()
+	if err != nil {
+		if !errors.Is(err, r.Context().Err()) {
+			observability.RecordSpanError(span, err)
+		}
 		return
 	}
 }
@@ -264,6 +278,14 @@ func writeStreamingResponse(w http.ResponseWriter, r *http.Request, resp respons
 }
 
 func writeStreamingResponseWithOptions(w http.ResponseWriter, r *http.Request, resp responseObject, opts Options) error {
+	_, span := observability.StartSpan(r.Context(), "fake_provider.stream.write", observability.ComponentFakeProvider)
+	defer span.End()
+
+	return writeStreamingResponseWithOptionsSpan(w, r, resp, opts, span)
+}
+
+func writeStreamingResponseWithOptionsSpan(w http.ResponseWriter, r *http.Request, resp responseObject, opts Options, span trace.Span) error {
+	requestCtx := r.Context()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSONError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming unsupported")
@@ -278,15 +300,18 @@ func writeStreamingResponseWithOptions(w http.ResponseWriter, r *http.Request, r
 	w.WriteHeader(http.StatusOK)
 
 	for i, event := range buildStreamEvents(resp) {
-		if err := r.Context().Err(); err != nil {
+		if err := requestCtx.Err(); err != nil {
+			observability.RecordSpanError(span, err)
 			return err
 		}
 		if i > 0 {
-			if err := waitStreamDelay(r.Context(), opts.StreamDelay); err != nil {
+			if err := waitStreamDelay(requestCtx, opts.StreamDelay); err != nil {
+				observability.RecordSpanError(span, err)
 				return err
 			}
 		}
 		if err := writeSSEEvent(w, flusher, event.Type, event.Data); err != nil {
+			observability.RecordSpanError(span, err)
 			_ = writeSSEEvent(w, flusher, "error", map[string]any{
 				"type":            "error",
 				"sequence_number": nextSequence(event.Data),
@@ -296,11 +321,18 @@ func writeStreamingResponseWithOptions(w http.ResponseWriter, r *http.Request, r
 			_ = writeSSEDone(w, flusher)
 			return err
 		}
+		observability.LLMStreamEvent(requestCtx, observability.ComponentFakeProvider, event.Type)
 	}
-	if err := r.Context().Err(); err != nil {
+	if err := requestCtx.Err(); err != nil {
+		observability.RecordSpanError(span, err)
 		return err
 	}
-	return writeSSEDone(w, flusher)
+	if err := writeSSEDone(w, flusher); err != nil {
+		observability.RecordSpanError(span, err)
+		return err
+	}
+	observability.LLMStreamEvent(requestCtx, observability.ComponentFakeProvider, "done")
+	return nil
 }
 
 func waitStreamDelay(ctx context.Context, delay time.Duration) error {

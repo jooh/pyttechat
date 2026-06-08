@@ -10,9 +10,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
+
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestNewClientSetsDefaultTimeout(t *testing.T) {
@@ -20,6 +25,38 @@ func TestNewClientSetsDefaultTimeout(t *testing.T) {
 
 	if client.httpClient.Timeout <= 0 {
 		t.Fatalf("http client timeout = %s, want bounded default timeout", client.httpClient.Timeout)
+	}
+}
+
+func TestNewClientUsesInstrumentedTransportAndPreservesTimeout(t *testing.T) {
+	original := instrumentHTTPTransport
+	t.Cleanup(func() {
+		instrumentHTTPTransport = original
+	})
+
+	base := markerTransport{}
+	var called bool
+	instrumentHTTPTransport = func(got http.RoundTripper) http.RoundTripper {
+		called = true
+		if got != base {
+			t.Fatalf("base transport = %T, want injected base transport", got)
+		}
+		return got
+	}
+
+	client := NewClientWithOptions("http://example.test", Options{
+		Timeout:   2 * time.Second,
+		Transport: base,
+	})
+
+	if !called {
+		t.Fatalf("instrumentHTTPTransport was not called")
+	}
+	if client.httpClient.Timeout != 2*time.Second {
+		t.Fatalf("timeout = %s, want configured timeout", client.httpClient.Timeout)
+	}
+	if client.httpClient.Transport != base {
+		t.Fatalf("transport = %T, want instrumented transport returned by seam", client.httpClient.Transport)
 	}
 }
 
@@ -675,6 +712,50 @@ func TestStreamNextReturnsReadErrors(t *testing.T) {
 	}
 }
 
+func TestStreamCompletedEventFinishesSpanWithoutCancel(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() {
+		if err := tracerProvider.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown() error = %v, want nil", err)
+		}
+	}()
+	_, span := tracerProvider.Tracer("test").Start(context.Background(), "openresponses.stream.consume")
+	payload := `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_1"}}` + "\n\n"
+	s := &stream{
+		body:   io.NopCloser(strings.NewReader("")),
+		reader: bufio.NewReader(strings.NewReader(payload)),
+		span:   span,
+	}
+
+	event, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventCompleted {
+		t.Fatalf("event type = %q, want completed", event.Type)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans after completed event = %d, want 1", len(spans))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+	spans = exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans after Close() = %d, want 1", len(spans))
+	}
+	if spans[0].Status.Code == codes.Error {
+		t.Fatalf("span status = %v, want non-error", spans[0].Status)
+	}
+	for _, event := range spans[0].Events {
+		if event.Name == "exception" {
+			t.Fatalf("span events = %#v, want no recorded cancellation exception", spans[0].Events)
+		}
+	}
+}
+
 func TestClientReturnsStreamErrorEventsAsErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -769,6 +850,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type markerTransport struct{}
+
+func (markerTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not used")
 }
 
 type errReader struct{}

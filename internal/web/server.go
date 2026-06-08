@@ -23,6 +23,7 @@ import (
 	"example.com/llm-chat-web/internal/chat"
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/markdown"
+	"example.com/llm-chat-web/internal/observability"
 	"example.com/llm-chat-web/internal/storage"
 )
 
@@ -182,7 +183,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	turn, err := newTurnJob(prompt)
+	turn, err := newTurnJobWithContext(context.WithoutCancel(r.Context()), prompt)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "turn_error", "could not create turn")
 		return
@@ -203,6 +204,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		Model:                 s.model,
 		ReasoningEffort:       s.reasoningEffort,
 		RenderingInstructions: chat.WebRenderingInstructions(),
+		TelemetryComponent:    observability.ComponentWeb,
 	})
 
 	writeJSON(w, http.StatusCreated, createTurnResponse{
@@ -232,6 +234,10 @@ func (s *Server) handleTurnRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID string) {
+	requestCtx := r.Context()
+	ctx, span := observability.StartSpan(requestCtx, "chat.turn.stream", observability.ComponentWeb)
+	defer span.End()
+
 	session, err := s.session(w, r)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidSession) {
@@ -269,8 +275,10 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 
 	for _, event := range replay {
 		if err := writeSSE(w, flusher, event); err != nil {
+			observability.RecordSpanError(span, err)
 			return
 		}
+		observability.LLMStreamEvent(ctx, observability.ComponentWeb, event.Name)
 	}
 	if terminal {
 		return
@@ -278,20 +286,26 @@ func (s *Server) handleTurnEvents(w http.ResponseWriter, r *http.Request, turnID
 
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-requestCtx.Done():
 			return
 		case event, ok := <-updates:
 			if !ok {
 				return
 			}
 			if err := writeSSE(w, flusher, event); err != nil {
+				observability.RecordSpanError(span, err)
 				return
 			}
+			observability.LLMStreamEvent(ctx, observability.ComponentWeb, event.Name)
 		}
 	}
 }
 
 func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID string) {
+	requestCtx := r.Context()
+	_, span := observability.StartSpan(requestCtx, "chat.turn.abort", observability.ComponentWeb)
+	defer span.End()
+
 	session, err := s.session(w, r)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidSession) {
@@ -311,10 +325,11 @@ func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID 
 		writeJSONError(w, http.StatusNotFound, "turn_not_found", "turn not found")
 		return
 	}
-	if !turn.abort(r.Context()) {
+	if !turn.abort(requestCtx) {
 		writeJSONError(w, http.StatusConflict, "turn_finished", "turn is already finished")
 		return
 	}
+	observability.SetSpanStatus(span, observability.ChatTurnStatusCancelled)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"aborted": turnID,
 	})
@@ -1024,6 +1039,10 @@ type turnJob struct {
 }
 
 func newTurnJob(prompt string) (*turnJob, error) {
+	return newTurnJobWithContext(context.Background(), prompt)
+}
+
+func newTurnJobWithContext(ctx context.Context, prompt string) (*turnJob, error) { //nolint:contextcheck // turn jobs store a cancelable context because they outlive the create request.
 	turnID, err := randomID("turn")
 	if err != nil {
 		return nil, err
@@ -1036,7 +1055,10 @@ func newTurnJob(prompt string) (*turnJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	return &turnJob{
 		id:                 turnID,
 		userMessageID:      userMessageID,
