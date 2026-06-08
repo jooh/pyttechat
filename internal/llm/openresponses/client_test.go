@@ -14,6 +14,10 @@ import (
 
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
+
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestNewClientSetsDefaultTimeout(t *testing.T) {
@@ -705,6 +709,50 @@ func TestStreamNextReturnsReadErrors(t *testing.T) {
 	_, err := s.Next()
 	if err == nil || !strings.Contains(err.Error(), "read failed") {
 		t.Fatalf("Next() error = %v, want read failure", err)
+	}
+}
+
+func TestStreamCompletedEventFinishesSpanWithoutCancel(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer func() {
+		if err := tracerProvider.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown() error = %v, want nil", err)
+		}
+	}()
+	_, span := tracerProvider.Tracer("test").Start(context.Background(), "openresponses.stream.consume")
+	payload := `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_1"}}` + "\n\n"
+	s := &stream{
+		body:   io.NopCloser(strings.NewReader("")),
+		reader: bufio.NewReader(strings.NewReader(payload)),
+		span:   span,
+	}
+
+	event, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Type != llm.EventCompleted {
+		t.Fatalf("event type = %q, want completed", event.Type)
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans after completed event = %d, want 1", len(spans))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+	spans = exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans after Close() = %d, want 1", len(spans))
+	}
+	if spans[0].Status.Code == codes.Error {
+		t.Fatalf("span status = %v, want non-error", spans[0].Status)
+	}
+	for _, event := range spans[0].Events {
+		if event.Name == "exception" {
+			t.Fatalf("span events = %#v, want no recorded cancellation exception", spans[0].Events)
+		}
 	}
 }
 

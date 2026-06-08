@@ -365,6 +365,8 @@ func (s *stream) mapPayload(payload map[string]any) (llm.Event, bool, error) {
 		}
 		return llm.Event{Type: llm.EventOutputItemDone, Part: part}, true, nil
 	case "response.completed":
+		s.done = true
+		s.finish(nil)
 		return completedEvent(payload), true, nil
 	case "response.failed", "error":
 		return llm.Event{}, false, streamError(payload)
