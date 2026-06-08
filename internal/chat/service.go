@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
+	"example.com/llm-chat-web/internal/observability"
 )
 
 var (
@@ -73,6 +75,10 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		return nil, ErrEmptyPrompt
 	}
 
+	ctx, span := observability.StartSpan(ctx, "chat.turn.start", "")
+	startedAt := time.Now()
+	defer span.End()
+
 	userMessage := llm.NewTextMessage(llm.RoleUser, prompt)
 	request := llm.Request{
 		Model:        opts.Model,
@@ -88,15 +94,19 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 	s.mu.Lock()
 	if s.inFlight {
 		s.mu.Unlock()
+		observability.RecordSpanError(span, ErrTurnInProgress)
 		return nil, ErrTurnInProgress
 	}
 	request.Messages = append(llm.CloneMessages(s.messages), userMessage.Clone())
 	s.inFlight = true
 	s.mu.Unlock()
 
+	observability.ChatTurnStarted(ctx)
 	stream, err := s.client.Stream(ctx, request)
 	if err != nil {
 		s.releaseTurn()
+		observability.ChatTurnFailed(ctx, startedAt, err)
+		observability.RecordSpanError(span, err)
 		return nil, err
 	}
 
@@ -104,6 +114,8 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		session:     s,
 		stream:      stream,
 		userMessage: userMessage,
+		ctx:         ctx,
+		startedAt:   startedAt,
 	}, nil
 }
 
@@ -117,15 +129,19 @@ type TurnStream struct {
 	session     *Session
 	stream      llm.Stream
 	userMessage llm.Message
+	ctx         context.Context
+	startedAt   time.Time
 
 	assistantParts []llm.Part
 	completed      bool
 	finalized      bool
+	recorded       bool
 }
 
 func (s *TurnStream) Next() (llm.Event, error) {
 	event, err := s.stream.Next()
 	if err != nil {
+		s.recordError(err)
 		s.abort()
 		return llm.Event{}, err
 	}
@@ -140,11 +156,14 @@ func (s *TurnStream) Next() (llm.Event, error) {
 	case llm.EventCompleted:
 		s.completed = true
 		if err := s.finalize(); err != nil {
+			s.recordError(err)
 			s.abort()
 			return event, err
 		}
+		s.recordCompleted()
 	case llm.EventError:
 		if event.Err != nil {
+			s.recordFailed(event.Err)
 			s.abort()
 			return event, event.Err
 		}
@@ -154,6 +173,9 @@ func (s *TurnStream) Next() (llm.Event, error) {
 }
 
 func (s *TurnStream) Close() error {
+	if !s.completed {
+		s.recordCancelled()
+	}
 	s.abort()
 	return s.stream.Close()
 }
@@ -236,6 +258,38 @@ func (s *TurnStream) abort() {
 	}
 	s.finalized = true
 	s.session.releaseTurn()
+}
+
+func (s *TurnStream) recordCompleted() {
+	if s.recorded {
+		return
+	}
+	s.recorded = true
+	observability.ChatTurnCompleted(s.ctx, s.startedAt)
+}
+
+func (s *TurnStream) recordCancelled() {
+	if s.recorded {
+		return
+	}
+	s.recorded = true
+	observability.ChatTurnCancelled(s.ctx, s.startedAt)
+}
+
+func (s *TurnStream) recordFailed(err error) {
+	if s.recorded {
+		return
+	}
+	s.recorded = true
+	observability.ChatTurnFailed(s.ctx, s.startedAt, err)
+}
+
+func (s *TurnStream) recordError(err error) {
+	if errors.Is(err, context.Canceled) {
+		s.recordCancelled()
+		return
+	}
+	s.recordFailed(err)
 }
 
 func (s *Session) releaseTurn() {

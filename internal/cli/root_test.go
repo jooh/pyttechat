@@ -622,7 +622,7 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 
-		if err := printStream(stream, &stdout, &stderr); err != nil {
+		if err := printStream(context.Background(), stream, &stdout, &stderr); err != nil {
 			t.Fatalf("printStream error = %v, want nil", err)
 		}
 		if stdout.String() != "" {
@@ -638,7 +638,7 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 			{Type: llm.EventTextDelta, Delta: "answer"},
 		})
 
-		if err := printStream(stream, failingWriter{}, io.Discard); err == nil {
+		if err := printStream(context.Background(), stream, failingWriter{}, io.Discard); err == nil {
 			t.Fatalf("printStream error = nil, want stdout writer error")
 		}
 	})
@@ -648,7 +648,7 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 			{Type: llm.EventReasoningDelta, Delta: "thinking"},
 		})
 
-		if err := printStream(stream, io.Discard, failingWriter{}); err == nil {
+		if err := printStream(context.Background(), stream, io.Discard, failingWriter{}); err == nil {
 			t.Fatalf("printStream error = nil, want stderr writer error")
 		}
 	})
@@ -659,7 +659,7 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Send() error = %v, want nil", err)
 		}
-		if err := printStream(stream, io.Discard, io.Discard); err == nil {
+		if err := printStream(context.Background(), stream, io.Discard, io.Discard); err == nil {
 			t.Fatalf("printStream error = nil, want stream error")
 		}
 	})
@@ -671,7 +671,7 @@ func TestPrintStreamHandlesReasoningOnlyAndWriterErrors(t *testing.T) {
 		})
 		writer := &failAfterWriter{failAt: 1}
 
-		if err := printStream(stream, writer, io.Discard); err == nil {
+		if err := printStream(context.Background(), stream, writer, io.Discard); err == nil {
 			t.Fatalf("printStream error = nil, want newline writer error")
 		}
 	})

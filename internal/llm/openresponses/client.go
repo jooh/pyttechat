@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"example.com/llm-chat-web/internal/llm"
+	"example.com/llm-chat-web/internal/observability"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ErrStreamFailed = errors.New("openresponses stream failed")
@@ -27,10 +31,12 @@ type Client struct {
 }
 
 var marshalJSON = json.Marshal
+var instrumentHTTPTransport = observability.HTTPClientTransport
 
 type Options struct {
 	Timeout     time.Duration
 	BearerToken string
+	Transport   http.RoundTripper
 }
 
 func NewClient(baseURL string) *Client {
@@ -47,21 +53,36 @@ func NewClientWithOptions(baseURL string, opts Options) *Client {
 		timeout = DefaultTimeout
 	}
 
+	transport := opts.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
 	return &Client{
 		baseURL:     strings.TrimRight(baseURL, "/"),
-		httpClient:  &http.Client{Timeout: timeout},
+		httpClient:  &http.Client{Timeout: timeout, Transport: instrumentHTTPTransport(transport)},
 		bearerToken: strings.TrimSpace(opts.BearerToken),
 	}
 }
 
 func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	ctx, span := observability.StartSpan(ctx, "llm_proxy.responses.create", observability.ComponentLLMProxy)
+	startedAt := time.Now()
+	status := observability.ChatTurnStatusFailed
+	defer func() {
+		observability.RecordLLMRequestDuration(ctx, observability.ComponentLLMProxy, startedAt, status)
+		span.End()
+	}()
+
 	body, err := marshalJSON(c.createRequestBody(request))
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		return nil, err
 	}
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.responsesURL(), bytes.NewReader(body))
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		return nil, err
 	}
 	httpRequest.Header.Set("Accept", "text/event-stream")
@@ -72,18 +93,25 @@ func (c *Client) Stream(ctx context.Context, request llm.Request) (llm.Stream, e
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
+		observability.RecordSpanError(span, err)
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		defer response.Body.Close()
 		errorBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("%w: status %d: %s", ErrStreamFailed, response.StatusCode, strings.TrimSpace(string(errorBody)))
+		err := fmt.Errorf("%w: status %d: %s", ErrStreamFailed, response.StatusCode, strings.TrimSpace(string(errorBody)))
+		observability.RecordSpanError(span, err)
+		return nil, err
 	}
 
+	status = observability.ChatTurnStatusCompleted
+	consumeCtx, consumeSpan := observability.StartSpan(ctx, "openresponses.stream.consume", observability.ComponentLLMProxy)
 	return &stream{
 		body:     response.Body,
 		reader:   bufio.NewReader(response.Body),
 		textSeen: map[string]bool{},
+		ctx:      consumeCtx,
+		span:     consumeSpan,
 	}, nil
 }
 
@@ -189,6 +217,9 @@ type stream struct {
 	data     []string
 	done     bool
 	textSeen map[string]bool
+	ctx      context.Context
+	span     trace.Span
+	spanDone bool
 }
 
 func (s *stream) Next() (llm.Event, error) {
@@ -202,17 +233,25 @@ func (s *stream) Next() (llm.Event, error) {
 			if errors.Is(err, io.EOF) {
 				event, ok, dispatchErr := s.dispatch()
 				if dispatchErr != nil || ok {
+					if dispatchErr != nil {
+						s.finish(dispatchErr)
+					}
 					return event, dispatchErr
 				}
 				s.done = true
+				s.finish(nil)
 				return llm.Event{}, io.EOF
 			}
+			s.finish(err)
 			return llm.Event{}, err
 		}
 
 		if line == "" {
 			event, ok, err := s.dispatch()
 			if err != nil || ok {
+				if err != nil {
+					s.finish(err)
+				}
 				return event, err
 			}
 			continue
@@ -228,6 +267,9 @@ func (s *stream) Next() (llm.Event, error) {
 }
 
 func (s *stream) Close() error {
+	if !s.done {
+		s.finish(context.Canceled)
+	}
 	return s.body.Close()
 }
 
@@ -252,14 +294,36 @@ func (s *stream) dispatch() (llm.Event, bool, error) {
 
 	if raw == "[DONE]" {
 		s.done = true
+		s.finish(nil)
 		return llm.Event{}, false, io.EOF
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		s.finish(err)
 		return llm.Event{}, false, err
 	}
+	s.recordPayload(payload)
 	return s.mapPayload(payload)
+}
+
+func (s *stream) recordPayload(payload map[string]any) {
+	eventType := sanitizeOpenResponsesEventType(stringField(payload, "type"))
+	observability.LLMStreamEvent(s.ctx, observability.ComponentLLMProxy, eventType)
+	if s.span != nil {
+		s.span.AddEvent("openresponses.stream.event", trace.WithAttributes(attribute.String("llm.stream.event_type", eventType)))
+	}
+}
+
+func (s *stream) finish(err error) {
+	if s.span == nil || s.spanDone {
+		return
+	}
+	s.spanDone = true
+	if err != nil && !errors.Is(err, io.EOF) {
+		observability.RecordSpanError(s.span, err)
+	}
+	s.span.End()
 }
 
 func (s *stream) mapPayload(payload map[string]any) (llm.Event, bool, error) {
@@ -454,6 +518,28 @@ func streamError(payload map[string]any) error {
 func stringField(payload map[string]any, name string) string {
 	value, _ := payload[name].(string)
 	return value
+}
+
+func sanitizeOpenResponsesEventType(eventType string) string {
+	switch eventType {
+	case "response.created",
+		"response.in_progress",
+		"response.output_item.added",
+		"response.output_item.done",
+		"response.content_part.added",
+		"response.content_part.done",
+		"response.output_text.delta",
+		"response.output_text.done",
+		"response.reasoning.delta",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_text.delta",
+		"response.completed",
+		"response.failed",
+		"error":
+		return eventType
+	default:
+		return "unknown"
+	}
 }
 
 func intField(payload map[string]any, name string) int {

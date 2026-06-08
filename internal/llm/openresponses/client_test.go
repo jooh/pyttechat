@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/openresponses/fakeprovider"
@@ -20,6 +21,38 @@ func TestNewClientSetsDefaultTimeout(t *testing.T) {
 
 	if client.httpClient.Timeout <= 0 {
 		t.Fatalf("http client timeout = %s, want bounded default timeout", client.httpClient.Timeout)
+	}
+}
+
+func TestNewClientUsesInstrumentedTransportAndPreservesTimeout(t *testing.T) {
+	original := instrumentHTTPTransport
+	t.Cleanup(func() {
+		instrumentHTTPTransport = original
+	})
+
+	base := markerTransport{}
+	var called bool
+	instrumentHTTPTransport = func(got http.RoundTripper) http.RoundTripper {
+		called = true
+		if got != base {
+			t.Fatalf("base transport = %T, want injected base transport", got)
+		}
+		return got
+	}
+
+	client := NewClientWithOptions("http://example.test", Options{
+		Timeout:   2 * time.Second,
+		Transport: base,
+	})
+
+	if !called {
+		t.Fatalf("instrumentHTTPTransport was not called")
+	}
+	if client.httpClient.Timeout != 2*time.Second {
+		t.Fatalf("timeout = %s, want configured timeout", client.httpClient.Timeout)
+	}
+	if client.httpClient.Transport != base {
+		t.Fatalf("transport = %T, want instrumented transport returned by seam", client.httpClient.Transport)
 	}
 }
 
@@ -769,6 +802,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type markerTransport struct{}
+
+func (markerTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not used")
 }
 
 type errReader struct{}
