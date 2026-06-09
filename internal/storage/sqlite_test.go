@@ -386,11 +386,11 @@ func TestSQLiteReplaceTailAndAppendTurnTruncatesAndAppends(t *testing.T) {
 		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
 	}
 
-	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer one")); err != nil {
-		t.Fatalf("AppendTurn first error = %v, want nil", err)
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer one")); appendErr != nil {
+		t.Fatalf("AppendTurn first error = %v, want nil", appendErr)
 	}
-	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); err != nil {
-		t.Fatalf("AppendTurn second error = %v, want nil", err)
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); appendErr != nil {
+		t.Fatalf("AppendTurn second error = %v, want nil", appendErr)
 	}
 
 	err = store.ReplaceTailAndAppendTurn(ctx, conversation.ID, 2, llm.NewTextMessage(llm.RoleUser, "edited second"), llm.NewTextMessage(llm.RoleAssistant, "replacement answer"))
@@ -445,14 +445,14 @@ func TestSQLiteReplaceTailAndAppendTurnRejectsInvalidKeepCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
 	}
-	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer")); err != nil {
-		t.Fatalf("AppendTurn error = %v, want nil", err)
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer")); appendErr != nil {
+		t.Fatalf("AppendTurn error = %v, want nil", appendErr)
 	}
 
 	for _, keepMessages := range []int{-1, 3} {
-		err := store.ReplaceTailAndAppendTurn(ctx, conversation.ID, keepMessages, llm.NewTextMessage(llm.RoleUser, "bad"), llm.NewTextMessage(llm.RoleAssistant, "bad answer"))
-		if !errors.Is(err, ErrInvalidArgument) {
-			t.Fatalf("ReplaceTailAndAppendTurn keep=%d error = %v, want ErrInvalidArgument", keepMessages, err)
+		replaceErr := store.ReplaceTailAndAppendTurn(ctx, conversation.ID, keepMessages, llm.NewTextMessage(llm.RoleUser, "bad"), llm.NewTextMessage(llm.RoleAssistant, "bad answer"))
+		if !errors.Is(replaceErr, ErrInvalidArgument) {
+			t.Fatalf("ReplaceTailAndAppendTurn keep=%d error = %v, want ErrInvalidArgument", keepMessages, replaceErr)
 		}
 	}
 

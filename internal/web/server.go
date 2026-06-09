@@ -184,7 +184,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "empty_prompt", "prompt must not be empty")
 		return
 	}
-	if err := session.chat.ValidateReplaceFrom(request.ReplaceFrom); err != nil {
+	if validateErr := session.chat.ValidateReplaceFrom(request.ReplaceFrom); validateErr != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_replace_from", "replace_from must point to a user message or the end of the conversation")
 		return
 	}
