@@ -3,11 +3,15 @@
   const messages = document.getElementById('messages');
   const messagesEnd = document.getElementById('messages-end');
   const scrollButton = document.getElementById('scroll-bottom');
+  const composerDock = document.getElementById('composer-dock');
   const form = document.getElementById('chat-form');
   const prompt = document.getElementById('prompt');
-  const sendButton = document.getElementById('send-button');
-  const stopButton = document.getElementById('stop-button');
+  const actionButton = document.getElementById('composer-action');
+  const actionIcons = actionButton ? actionButton.querySelectorAll('[data-action-icon]') : [];
+  const undoButton = document.getElementById('undo-button');
+  const redoButton = document.getElementById('redo-button');
   const composerStatus = document.getElementById('composer-status');
+  const dirtyDialog = document.getElementById('dirty-dialog');
   const themeToggle = document.querySelector('[data-theme-toggle]');
   const themeIcons = themeToggle ? themeToggle.querySelectorAll('[data-theme-icon]') : [];
 
@@ -24,6 +28,11 @@
   let abortRequested = false;
   let creatingTurn = false;
   let statusIDCounter = 0;
+  let nextMessageIndex = initialNextMessageIndex();
+  let currentEditIndex = null;
+  let originalPromptValue = '';
+  let dockPromptValue = '';
+  let pendingNavigation = null;
   let mermaidInitialized = false;
   let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
@@ -106,6 +115,55 @@
     }
   }
 
+  function messageIndex(article) {
+    const value = Number.parseInt(article?.dataset.messageIndex || '', 10);
+    return Number.isFinite(value) ? value : -1;
+  }
+
+  function initialNextMessageIndex() {
+    let maxIndex = -1;
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      maxIndex = Math.max(maxIndex, messageIndex(article));
+    });
+    return maxIndex + 1;
+  }
+
+  function transcriptPosition() {
+    return currentEditIndex === null ? nextMessageIndex : currentEditIndex;
+  }
+
+  function userMessages() {
+    return Array.from(messages.querySelectorAll('.message-user[data-editable-prompt="true"][data-message-index]'))
+      .sort(function (left, right) {
+        return messageIndex(left) - messageIndex(right);
+      });
+  }
+
+  function userMessageBefore(index) {
+    let target = null;
+    userMessages().forEach(function (article) {
+      if (messageIndex(article) < index) {
+        target = article;
+      }
+    });
+    return target;
+  }
+
+  function userMessageAfter(index) {
+    return userMessages().find(function (article) {
+      return messageIndex(article) > index;
+    }) || null;
+  }
+
+  function promptTextForArticle(article) {
+    const body = article?.querySelector('.message-text');
+    return body ? body.textContent || '' : '';
+  }
+
+  function hasDirtyPrompt() {
+    return prompt.value !== originalPromptValue;
+  }
+
   function isNearBottom() {
     return messages.scrollHeight - messages.scrollTop - messages.clientHeight < nearBottomThreshold;
   }
@@ -161,6 +219,115 @@
   function discardTurn(user, assistant) {
     removeMessage(assistant);
     removeMessage(user);
+  }
+
+  function articleForEditIndex(index) {
+    return messages.querySelector(`.message-user[data-editable-prompt="true"][data-message-index="${index}"]`);
+  }
+
+  function editSlotFor(article) {
+    let slot = article.querySelector(':scope > .message-edit-slot');
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'message-edit-slot';
+      const actions = article.querySelector(':scope > .message-actions');
+      article.insertBefore(slot, actions || null);
+    }
+    return slot;
+  }
+
+  function clearEditingArticle() {
+    const editing = messages.querySelector('.message-user[data-editing="true"]');
+    if (editing) {
+      delete editing.dataset.editing;
+    }
+  }
+
+  function animateComposerFrom(firstRect) {
+    if (!firstRect || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
+    const box = form.querySelector('.composer-box');
+    if (!box) {
+      return;
+    }
+    const lastRect = form.getBoundingClientRect();
+    const dx = firstRect.left - lastRect.left;
+    const dy = firstRect.top - lastRect.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+      return;
+    }
+    box.style.transition = 'none';
+    box.style.transform = `translate(${dx}px, ${dy}px)`;
+    window.requestAnimationFrame(function () {
+      box.style.transition = 'transform 180ms ease';
+      box.style.transform = 'translate(0, 0)';
+    });
+    box.addEventListener('transitionend', function cleanup(event) {
+      if (event.propertyName !== 'transform') {
+        return;
+      }
+      box.style.transition = '';
+      box.style.transform = '';
+      box.removeEventListener('transitionend', cleanup);
+    });
+  }
+
+  function focusPrompt(selection) {
+    window.requestAnimationFrame(function () {
+      prompt.focus({ preventScroll: true });
+      const position = selection === 'start' ? 0 : prompt.value.length;
+      prompt.setSelectionRange(position, position);
+    });
+  }
+
+  function scrollComposerIntoView(targetIndex) {
+    const target = targetIndex === null ? composerDock : articleForEditIndex(targetIndex);
+    if (!target) {
+      return;
+    }
+    const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    target.scrollIntoView({ block: targetIndex === null ? 'nearest' : 'center', behavior });
+  }
+
+  function moveComposerTo(targetIndex, selection) {
+    const firstRect = form.getBoundingClientRect();
+    if (currentEditIndex === null) {
+      dockPromptValue = prompt.value;
+    }
+    clearEditingArticle();
+
+    if (targetIndex === null) {
+      composerDock.append(form);
+      currentEditIndex = null;
+      prompt.value = dockPromptValue;
+      originalPromptValue = dockPromptValue;
+    } else {
+      const article = articleForEditIndex(targetIndex);
+      if (!article) {
+        return;
+      }
+      article.dataset.editing = 'true';
+      editSlotFor(article).append(form);
+      currentEditIndex = targetIndex;
+      originalPromptValue = promptTextForArticle(article);
+      prompt.value = originalPromptValue;
+    }
+
+    syncPromptHeight();
+    updateComposerState();
+    animateComposerFrom(firstRect);
+    scrollComposerIntoView(targetIndex);
+    focusPrompt(selection);
+  }
+
+  function moveComposerToDockForSubmit() {
+    const firstRect = form.getBoundingClientRect();
+    clearEditingArticle();
+    composerDock.append(form);
+    currentEditIndex = null;
+    dockPromptValue = '';
+    animateComposerFrom(firstRect);
   }
 
   function createMessageActions() {
@@ -301,6 +468,12 @@
     clearEmptyState();
     const article = document.createElement('article');
     article.className = `message message-${role}`;
+    const index = options && Number.isInteger(options.messageIndex) ? options.messageIndex : nextMessageIndex;
+    article.dataset.messageIndex = String(index);
+    nextMessageIndex = Math.max(nextMessageIndex, index + 1);
+    if (role === 'user') {
+      article.dataset.editablePrompt = 'true';
+    }
     if (options && options.streaming) {
       article.classList.add('message-streaming');
     }
@@ -316,6 +489,17 @@
     insertMessage(article);
     scrollToBottom(true, true);
     return { article, text: messageText };
+  }
+
+  function truncateMessagesFrom(index) {
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      if (messageIndex(article) >= index) {
+        article.remove();
+      }
+    });
+    nextMessageIndex = index;
+    ensureEmptyState();
+    updateScrollButton();
   }
 
   function assignMessageIDs(user, assistant, turn) {
@@ -359,9 +543,30 @@
 
   function updateComposerState() {
     const submitting = Boolean(currentTurn) || creatingTurn;
-    sendButton.disabled = submitting || prompt.value.trim() === '';
-    stopButton.disabled = !currentTurn || abortRequested;
+    if (actionButton) {
+      const state = currentTurn ? (abortRequested ? 'stopping' : 'stop') : 'send';
+      actionButton.dataset.actionState = state;
+      actionButton.disabled = currentTurn ? abortRequested : creatingTurn || prompt.value.trim() === '';
+      actionButton.setAttribute('aria-label', currentTurn ? (abortRequested ? 'Stopping response' : 'Stop response') : 'Send message');
+      actionButton.title = currentTurn ? 'Stop response' : 'Send message';
+      actionIcons.forEach(function (icon) {
+        icon.hidden = icon.dataset.actionIcon !== (currentTurn ? 'stop' : 'send');
+      });
+    }
+    updateHistoryButtons(submitting);
     prompt.disabled = submitting;
+  }
+
+  function updateHistoryButtons(submitting) {
+    const busy = submitting || Boolean(dirtyDialog && dirtyDialog.open);
+    const previous = userMessageBefore(transcriptPosition());
+    const canRedo = currentEditIndex !== null;
+    if (undoButton) {
+      undoButton.disabled = busy || !previous;
+    }
+    if (redoButton) {
+      redoButton.disabled = busy || !canRedo;
+    }
   }
 
   function closeSource() {
@@ -401,6 +606,29 @@
     error.className = 'message-error-detail';
     error.textContent = message;
     assistant.text.replaceChildren(error);
+  }
+
+  function markTurnStopped(assistant) {
+    if (!assistant) {
+      return;
+    }
+    assistant.article.classList.remove('message-streaming');
+    assistant.article.classList.add('message-stopped');
+    completeThinkingStatus(assistant.article);
+    if (!assistantHasContent(assistant)) {
+      const status = assistant.article.querySelector('.message-status');
+      if (status) {
+        status.remove();
+      }
+    }
+    let note = assistant.article.querySelector('.message-stopped-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'message-stopped-note';
+      note.textContent = 'Stopped';
+      const actions = assistant.article.querySelector('.message-actions');
+      assistant.article.insertBefore(note, actions || null);
+    }
   }
 
   function languageFromCode(code) {
@@ -636,14 +864,18 @@
     }, 1400);
   }
 
-  async function submitPrompt(text) {
+  async function submitPrompt(text, options) {
+    const body = { prompt: text };
+    if (options && Number.isInteger(options.replaceFrom)) {
+      body.replace_from = options.replaceFrom;
+    }
     const response = await fetch('/chat/turns', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         [csrfHeaderName()]: csrfToken,
       },
-      body: JSON.stringify({ prompt: text }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       throw new Error(await response.text());
@@ -679,6 +911,69 @@
     }
   }
 
+  function navigateTo(targetIndex, selection) {
+    moveComposerTo(targetIndex, selection || (targetIndex === null ? 'end' : 'end'));
+  }
+
+  function continueNavigationAfterDiscard() {
+    if (!pendingNavigation) {
+      return;
+    }
+    const target = pendingNavigation;
+    pendingNavigation = null;
+    prompt.value = originalPromptValue;
+    if (currentEditIndex === null) {
+      dockPromptValue = originalPromptValue;
+    }
+    navigateTo(target.index, target.selection);
+  }
+
+  function requestNavigation(targetIndex, selection) {
+    if (currentTurn || creatingTurn) {
+      return;
+    }
+    if (hasDirtyPrompt()) {
+      pendingNavigation = { index: targetIndex, selection };
+      updateComposerState();
+      if (dirtyDialog && typeof dirtyDialog.showModal === 'function') {
+        dirtyDialog.showModal();
+        updateComposerState();
+        return;
+      }
+      if (window.confirm('Discard unsaved prompt changes?')) {
+        continueNavigationAfterDiscard();
+      } else {
+        pendingNavigation = null;
+      }
+      updateComposerState();
+      return;
+    }
+    navigateTo(targetIndex, selection);
+  }
+
+  function navigateBackward() {
+    const previous = userMessageBefore(transcriptPosition());
+    if (previous) {
+      requestNavigation(messageIndex(previous), 'end');
+    }
+  }
+
+  function navigateForward() {
+    if (currentEditIndex === null) {
+      return;
+    }
+    const next = userMessageAfter(currentEditIndex);
+    requestNavigation(next ? messageIndex(next) : null, 'start');
+  }
+
+  function caretAtStart() {
+    return prompt.selectionStart === 0 && prompt.selectionEnd === 0;
+  }
+
+  function caretAtEnd() {
+    return prompt.selectionStart === prompt.value.length && prompt.selectionEnd === prompt.value.length;
+  }
+
   async function abortDisconnectedTurn(turn, user, assistant) {
     if (currentTurn !== turn) {
       return;
@@ -693,7 +988,7 @@
       return;
     }
     if (currentTurn === turn) {
-      discardTurn(user, assistant);
+      markTurnStopped(assistant);
       finishTurn('Stream disconnected');
     }
   }
@@ -770,7 +1065,7 @@
         return;
       }
       clearStreamErrorTimer();
-      discardTurn(user, assistant);
+      markTurnStopped(assistant);
       finishTurn('Response stopped');
     });
 
@@ -818,18 +1113,26 @@
       return;
     }
 
-    const user = addMessage('user', text);
+    const replaceFrom = currentEditIndex;
+    moveComposerToDockForSubmit();
+    if (replaceFrom !== null) {
+      truncateMessagesFrom(replaceFrom);
+    }
+
+    const userIndex = replaceFrom === null ? nextMessageIndex : replaceFrom;
+    const user = addMessage('user', text, { messageIndex: userIndex });
     const assistant = addMessage('assistant', '', { streaming: true });
     currentUser = user;
     currentAssistant = assistant;
     prompt.value = '';
+    originalPromptValue = '';
     syncPromptHeight();
     creatingTurn = true;
     updateComposerState();
     setStatus('Starting response');
 
     try {
-      const turn = await submitPrompt(text);
+      const turn = await submitPrompt(text, replaceFrom === null ? null : { replaceFrom });
       assignMessageIDs(user, assistant, turn);
       creatingTurn = false;
       subscribe(turn, user, assistant);
@@ -842,7 +1145,20 @@
   });
 
   prompt.addEventListener('keydown', function (event) {
-    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229) {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    if (event.key === 'ArrowUp' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtStart()) {
+      event.preventDefault();
+      navigateBackward();
+      return;
+    }
+    if (event.key === 'ArrowDown' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtEnd()) {
+      event.preventDefault();
+      navigateForward();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
     event.preventDefault();
@@ -852,28 +1168,58 @@
   });
 
   prompt.addEventListener('input', function () {
+    if (currentEditIndex === null) {
+      dockPromptValue = prompt.value;
+    }
     syncPromptHeight();
     updateComposerState();
   });
 
-  stopButton.addEventListener('click', async function () {
-    if (!currentTurn) {
-      return;
-    }
-    const turn = currentTurn;
-    try {
-      await requestAbort(turn);
-      if (currentTurn === turn) {
-        discardTurn(currentUser, currentAssistant);
-        finishTurn('Response stopped');
+  if (actionButton) {
+    actionButton.addEventListener('click', async function () {
+      if (!currentTurn) {
+        form.requestSubmit();
+        return;
       }
-    } catch (error) {
-      if (currentTurn === turn && currentAssistant) {
-        markTurnError(currentAssistant, 'The turn could not be stopped.');
-        finishTurn('Stop failed');
+      const turn = currentTurn;
+      try {
+        await requestAbort(turn);
+        if (currentTurn === turn) {
+          markTurnStopped(currentAssistant);
+          finishTurn('Response stopped');
+        }
+      } catch (error) {
+        if (currentTurn === turn && currentAssistant) {
+          markTurnError(currentAssistant, 'The turn could not be stopped.');
+          finishTurn('Stop failed');
+        }
       }
-    }
-  });
+    });
+  }
+
+  if (undoButton) {
+    undoButton.addEventListener('click', navigateBackward);
+  }
+
+  if (redoButton) {
+    redoButton.addEventListener('click', navigateForward);
+  }
+
+  if (dirtyDialog) {
+    dirtyDialog.addEventListener('close', function () {
+      const action = dirtyDialog.returnValue;
+      if (action === 'submit') {
+        pendingNavigation = null;
+        form.requestSubmit();
+      } else if (action === 'discard') {
+        continueNavigationAfterDiscard();
+      } else {
+        pendingNavigation = null;
+      }
+      dirtyDialog.returnValue = '';
+      updateComposerState();
+    });
+  }
 
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
 

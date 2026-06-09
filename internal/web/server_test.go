@@ -85,8 +85,17 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`class="chat-panel"`,
 		`id="scroll-bottom"`,
 		`id="composer-status"`,
+		`id="composer-dock"`,
+		`id="undo-button"`,
+		`id="redo-button"`,
+		`id="composer-action"`,
+		`data-action-state="send"`,
+		`data-action-icon="send"`,
+		`data-action-icon="stop"`,
+		`id="dirty-dialog"`,
+		`aria-label="Previous prompt"`,
+		`aria-label="Next prompt"`,
 		`aria-label="Send message"`,
-		`aria-label="Stop response"`,
 		`id="theme-toggle"`,
 		`data-theme-toggle`,
 		`aria-label="Current theme: system preference"`,
@@ -776,6 +785,10 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`status-sweep`,
 		`@keyframes status-sweep`,
 		`.message-status`,
+		`.message-edit-slot`,
+		`.action-button`,
+		`.history-button`,
+		`.dirty-dialog`,
 		`animation: status-sweep 2.2s`,
 		`--status-sweep-low: rgb(32 32 32);`,
 		`min-height: 2.1rem;`,
@@ -826,6 +839,12 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`const nearBottomThreshold = 32;`,
 		`const wasNearBottom = isNearBottom();`,
 		`scrollToBottom(false, wasNearBottom);`,
+		`replace_from`,
+		`markTurnStopped`,
+		`requestNavigation`,
+		`ArrowUp`,
+		`ArrowDown`,
+		`data-action-icon`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
@@ -1099,6 +1118,33 @@ func TestCreateTurnRejectsConcurrentTurn(t *testing.T) {
 	}
 }
 
+func TestCreateTurnRejectsInvalidReplaceFrom(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}})}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "first")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	for _, replaceFrom := range []int{-1, 1, 3} {
+		request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns", map[string]any{
+			"prompt":       "replacement",
+			"replace_from": replaceFrom,
+		})
+		request.Header.Set(csrfHeaderName, csrfToken)
+		response, body := do(t, client, request)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("replace_from=%d status = %d, want 400; body = %q", replaceFrom, response.StatusCode, body)
+		}
+	}
+}
+
 func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	completedAt := time.Date(2026, 5, 25, 12, 34, 56, 0, time.UTC)
 	withTimeNow(t, func() time.Time { return completedAt })
@@ -1323,6 +1369,75 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	}
 }
 
+func TestAbortedTurnPersistsPartialOutputForFollowUp(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	_ = llmClient.waitForContext(t)
+
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	select {
+	case llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial"}:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out sending partial event")
+	}
+	reader := bufio.NewReader(response.Body)
+	frame := readSSEFrame(t, reader)
+	if frame.Event != "preview" || !strings.Contains(string(frame.Data), "partial") {
+		t.Fatalf("first frame = %#v, want partial preview", frame)
+	}
+
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResponse, abortBody := do(t, client, request)
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll remaining events error = %v", err)
+	}
+	if !hasFrame(parseSSE(t, string(remaining)), "aborted", `"turn_id":"`+turn.TurnID+`"`) {
+		t.Fatalf("remaining SSE body = %q, want aborted event", remaining)
+	}
+
+	next := createTurn(t, client, server.URL, csrfToken, "follow up")
+	_ = llmClient.waitForContext(t)
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	cleanupResponse, cleanupBody := do(t, client, request)
+	defer cleanupResponse.Body.Close()
+	if cleanupResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", cleanupResponse.StatusCode, cleanupBody)
+	}
+
+	requests := llmClient.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if got := requests[1].Messages; len(got) != 3 || got[0].Text() != "hello" || got[1].Text() != "partial" || got[2].Text() != "follow up" {
+		t.Fatalf("follow-up request messages = %#v, want stopped partial turn in context", requests[1].Messages)
+	}
+}
+
 func TestAbortRequiresCSRFAndRejectsFinishedTurn(t *testing.T) {
 	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
 	defer server.Close()
@@ -1514,6 +1629,46 @@ func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 	}
 }
 
+func TestReplaceFromTruncatesConversationContextForFollowUp(t *testing.T) {
+	llmClient := &recordingClient{}
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+
+	first := createTurn(t, client, server.URL, csrfToken, "first")
+	response, body := get(t, client, server.URL+first.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("first events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	second := createTurn(t, client, server.URL, csrfToken, "second")
+	response, body = get(t, client, server.URL+second.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("second events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	replacement := createTurnWithPayload(t, client, server.URL, csrfToken, map[string]any{
+		"prompt":       "edited second",
+		"replace_from": 2,
+	})
+	response, body = get(t, client, server.URL+replacement.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("replacement events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	requests := llmClient.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	if got := requests[2].Messages; len(got) != 3 || got[0].Text() != "first" || got[1].Text() != "answer 1" || got[2].Text() != "edited second" {
+		t.Fatalf("replacement request messages = %#v, want first turn plus edited prompt", requests[2].Messages)
+	}
+}
+
 func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	server := httptest.NewServer(NewServer(Options{
 		Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}}),
@@ -1550,6 +1705,8 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	for _, want := range []string{
 		`class="message-actions"`,
 		`data-copy-message`,
+		`data-message-index="0"`,
+		`data-editable-prompt="true"`,
 		`aria-label="Copy message"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -2511,9 +2668,15 @@ func fetchCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
 func createTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt string) turnResponse {
 	t.Helper()
 
-	request := newJSONRequest(t, http.MethodPost, baseURL+"/chat/turns", map[string]string{
+	return createTurnWithPayload(t, client, baseURL, csrfToken, map[string]any{
 		"prompt": prompt,
 	})
+}
+
+func createTurnWithPayload(t *testing.T, client *http.Client, baseURL, csrfToken string, payload map[string]any) turnResponse {
+	t.Helper()
+
+	request := newJSONRequest(t, http.MethodPost, baseURL+"/chat/turns", payload)
 	request.Header.Set(csrfHeaderName, csrfToken)
 	response, body := do(t, client, request)
 	defer response.Body.Close()
@@ -2521,14 +2684,14 @@ func createTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt st
 		t.Fatalf("POST /chat/turns status = %d, want 201; body = %q", response.StatusCode, body)
 	}
 
-	var payload turnResponse
-	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+	var turn turnResponse
+	if err := json.Unmarshal([]byte(body), &turn); err != nil {
 		t.Fatalf("decode turn response error = %v; body = %q", err, body)
 	}
-	if payload.TurnID == "" || payload.UserMessageID == "" || payload.AssistantMessageID == "" || payload.StreamURL == "" {
-		t.Fatalf("turn response = %#v, want stable ids and stream URL", payload)
+	if turn.TurnID == "" || turn.UserMessageID == "" || turn.AssistantMessageID == "" || turn.StreamURL == "" {
+		t.Fatalf("turn response = %#v, want stable ids and stream URL", turn)
 	}
-	return payload
+	return turn
 }
 
 func newJSONRequest(t *testing.T, method, url string, payload any) *http.Request {
@@ -2805,8 +2968,10 @@ func readSSEFrame(t *testing.T, reader *bufio.Reader) sseFrame {
 }
 
 type controlledClient struct {
-	events chan llm.Event
-	ctx    chan context.Context
+	mu       sync.Mutex
+	events   chan llm.Event
+	ctx      chan context.Context
+	requests []llm.Request
 }
 
 func newControlledClient() *controlledClient {
@@ -2816,9 +2981,23 @@ func newControlledClient() *controlledClient {
 	}
 }
 
-func (c *controlledClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+func (c *controlledClient) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, request.Clone())
+	c.mu.Unlock()
 	c.ctx <- ctx
 	return &controlledStream{ctx: ctx, events: c.events}, nil
+}
+
+func (c *controlledClient) Requests() []llm.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	requests := make([]llm.Request, len(c.requests))
+	for i, request := range c.requests {
+		requests[i] = request.Clone()
+	}
+	return requests
 }
 
 func (c *controlledClient) waitForContext(t *testing.T) context.Context {

@@ -829,9 +829,13 @@ button {
   box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
 }
 
-.composer {
+.composer-dock {
   margin: 0;
   padding: 0 0 1rem;
+}
+
+.composer {
+  margin: 0;
 }
 
 .composer-box {
@@ -844,6 +848,7 @@ button {
   border-radius: 0.9rem;
   background: var(--pico-card-background-color);
   box-shadow: 0 -0.35rem 1.5rem rgba(0, 0, 0, 0.04);
+  will-change: transform;
 }
 
 .composer-box:focus-within {
@@ -891,19 +896,138 @@ button {
   border-radius: 999px;
 }
 
-.stop-button {
-  border-color: var(--pico-del-color);
-  color: var(--pico-del-color);
+.history-button,
+.action-button {
+  border-color: var(--pico-muted-border-color);
+  background: transparent;
+  color: var(--pico-muted-color);
 }
 
-.send-button {
-  border-color: var(--pico-primary);
-  background: var(--pico-primary);
-  color: var(--pico-primary-inverse);
+.history-button:hover,
+.history-button:focus-visible,
+.action-button:hover,
+.action-button:focus-visible {
+  background: var(--pico-muted-border-color);
+  color: var(--pico-color);
+}
+
+.action-button[data-action-state="stop"],
+.action-button[data-action-state="stopping"] {
+  color: var(--pico-del-color);
 }
 
 .icon-button:disabled {
   opacity: 0.45;
+}
+
+.message-edit-slot {
+  display: none;
+}
+
+.message-user[data-editing="true"] {
+  padding: 0.35rem;
+}
+
+.message-user[data-editing="true"] > .message-text,
+.message-user[data-editing="true"] > .message-actions {
+  display: none;
+}
+
+.message-user[data-editing="true"] > .message-edit-slot {
+  display: block;
+}
+
+.message-user .composer {
+  padding: 0;
+}
+
+.message-user .composer-box {
+  border-color: color-mix(in srgb, var(--pico-background-color) 35%, transparent);
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-user .composer-box:focus-within {
+  border-color: var(--pico-background-color);
+  box-shadow: 0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 22%, transparent);
+}
+
+.message-user .composer textarea {
+  color: var(--pico-background-color);
+}
+
+.message-user .composer textarea::placeholder {
+  color: color-mix(in srgb, var(--pico-background-color) 65%, transparent);
+}
+
+.message-user .composer-status,
+.message-user .history-button,
+.message-user .action-button {
+  color: color-mix(in srgb, var(--pico-background-color) 78%, transparent);
+}
+
+.message-user .history-button,
+.message-user .action-button {
+  border-color: color-mix(in srgb, var(--pico-background-color) 30%, transparent);
+}
+
+.message-user .history-button:hover,
+.message-user .history-button:focus-visible,
+.message-user .action-button:hover,
+.message-user .action-button:focus-visible {
+  background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
+  color: var(--pico-background-color);
+}
+
+.message-stopped .message-stopped-note {
+  margin-top: 0.45rem;
+  color: var(--pico-muted-color);
+  font-size: 0.75rem;
+}
+
+.dirty-dialog {
+  width: min(26rem, calc(100vw - 2rem));
+  padding: 0;
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: 0.5rem;
+}
+
+.dirty-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.dirty-dialog-form {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+}
+
+.dirty-dialog h2,
+.dirty-dialog p {
+  margin: 0;
+}
+
+.dirty-dialog h2 {
+  font-size: 1rem;
+}
+
+.dirty-dialog p {
+  color: var(--pico-muted-color);
+  font-size: 0.9rem;
+}
+
+.dirty-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.dirty-dialog-actions button {
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
 }
 
 .sr-only {
@@ -934,7 +1058,7 @@ button {
     padding: 0.8rem 0.875rem;
   }
 
-  .composer {
+  .composer-dock {
     padding-bottom: 0.75rem;
   }
 

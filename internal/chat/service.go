@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	ErrEmptyPrompt    = errors.New("prompt must not be empty")
-	ErrTurnInProgress = errors.New("turn already in progress")
+	ErrEmptyPrompt        = errors.New("prompt must not be empty")
+	ErrInvalidReplaceFrom = errors.New("replace_from must point to a user message or the end of the conversation")
+	ErrTurnInProgress     = errors.New("turn already in progress")
 )
 
 type Service struct {
@@ -32,6 +33,7 @@ func NewPersistentService(client llm.Client, store Store) Service {
 type Store interface {
 	Messages(context.Context, int64) ([]llm.Message, error)
 	AppendTurn(context.Context, int64, llm.Message, llm.Message) error
+	ReplaceTailAndAppendTurn(context.Context, int64, int, llm.Message, llm.Message) error
 }
 
 func (s Service) NewSession() *Session {
@@ -68,6 +70,7 @@ type SendOptions struct {
 	ReasoningEffort       string
 	RenderingInstructions string
 	TelemetryComponent    string
+	ReplaceFrom           *int
 }
 
 func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*TurnStream, error) {
@@ -98,7 +101,13 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		observability.RecordSpanError(span, ErrTurnInProgress)
 		return nil, ErrTurnInProgress
 	}
-	request.Messages = append(llm.CloneMessages(s.messages), userMessage.Clone())
+	keepMessages, err := replaceFromIndex(s.messages, opts.ReplaceFrom)
+	if err != nil {
+		s.mu.Unlock()
+		observability.RecordSpanError(span, err)
+		return nil, err
+	}
+	request.Messages = append(llm.CloneMessages(s.messages[:keepMessages]), userMessage.Clone())
 	s.inFlight = true
 	s.mu.Unlock()
 
@@ -112,11 +121,12 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 	}
 
 	return &TurnStream{
-		session:     s,
-		stream:      stream,
-		userMessage: userMessage,
-		ctx:         ctx,
-		startedAt:   startedAt,
+		session:      s,
+		stream:       stream,
+		userMessage:  userMessage,
+		keepMessages: keepMessages,
+		ctx:          ctx,
+		startedAt:    startedAt,
 	}, nil
 }
 
@@ -126,12 +136,41 @@ func (s *Session) Messages() []llm.Message {
 	return llm.CloneMessages(s.messages)
 }
 
+func (s *Session) ValidateReplaceFrom(replaceFrom *int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := replaceFromIndex(s.messages, replaceFrom)
+	return err
+}
+
+func (s *Session) CommitStopped(ctx context.Context, prompt string, opts SendOptions) error {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return ErrEmptyPrompt
+	}
+	userMessage := llm.NewTextMessage(llm.RoleUser, prompt)
+
+	s.mu.Lock()
+	keepMessages, err := replaceFromIndex(s.messages, opts.ReplaceFrom)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := s.replaceTailLocked(ctx, keepMessages, userMessage, llm.Message{Role: llm.RoleAssistant}); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return nil
+}
+
 type TurnStream struct {
-	session     *Session
-	stream      llm.Stream
-	userMessage llm.Message
-	ctx         context.Context
-	startedAt   time.Time
+	session      *Session
+	stream       llm.Stream
+	userMessage  llm.Message
+	keepMessages int
+	ctx          context.Context
+	startedAt    time.Time
 
 	assistantParts []llm.Part
 	completed      bool
@@ -143,7 +182,9 @@ func (s *TurnStream) Next() (llm.Event, error) {
 	event, err := s.stream.Next()
 	if err != nil {
 		s.recordError(err)
-		s.abort()
+		if !errors.Is(err, context.Canceled) {
+			s.abort()
+		}
 		return llm.Event{}, err
 	}
 
@@ -156,7 +197,7 @@ func (s *TurnStream) Next() (llm.Event, error) {
 		s.mergeCompletedPart(event.Part)
 	case llm.EventCompleted:
 		s.completed = true
-		if err := s.finalize(); err != nil {
+		if err := s.finalize(false); err != nil {
 			s.recordError(err)
 			s.abort()
 			return event, err
@@ -179,6 +220,10 @@ func (s *TurnStream) Close() error {
 	}
 	s.abort()
 	return s.stream.Close()
+}
+
+func (s *TurnStream) CommitPartial() error {
+	return s.finalize(true)
 }
 
 func (s *TurnStream) appendDelta(partType llm.PartType, delta string) {
@@ -230,8 +275,8 @@ func (s *TurnStream) mergeCompletedPart(part llm.Part) {
 	s.assistantParts = append(s.assistantParts, part.Clone())
 }
 
-func (s *TurnStream) finalize() error {
-	if !s.completed || s.finalized {
+func (s *TurnStream) finalize(allowIncomplete bool) error {
+	if (!s.completed && !allowIncomplete) || s.finalized {
 		return nil
 	}
 
@@ -242,14 +287,10 @@ func (s *TurnStream) finalize() error {
 
 	s.session.mu.Lock()
 	defer s.session.mu.Unlock()
-	if s.session.store != nil {
-		if err := s.session.store.AppendTurn(context.Background(), s.session.conversationID, s.userMessage.Clone(), assistant.Clone()); err != nil {
-			return err
-		}
+	if err := s.session.replaceTailLocked(context.Background(), s.keepMessages, s.userMessage, assistant); err != nil {
+		return err
 	}
 	s.finalized = true
-	s.session.messages = append(s.session.messages, s.userMessage.Clone(), assistant)
-	s.session.inFlight = false
 	return nil
 }
 
@@ -297,6 +338,32 @@ func (s *Session) releaseTurn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inFlight = false
+}
+
+func replaceFromIndex(messages []llm.Message, replaceFrom *int) (int, error) {
+	if replaceFrom == nil {
+		return len(messages), nil
+	}
+	keepMessages := *replaceFrom
+	if keepMessages < 0 || keepMessages > len(messages) {
+		return 0, ErrInvalidReplaceFrom
+	}
+	if keepMessages < len(messages) && messages[keepMessages].Role != llm.RoleUser {
+		return 0, ErrInvalidReplaceFrom
+	}
+	return keepMessages, nil
+}
+
+func (s *Session) replaceTailLocked(ctx context.Context, keepMessages int, userMessage, assistant llm.Message) error {
+	if s.store != nil {
+		if err := s.store.ReplaceTailAndAppendTurn(ctx, s.conversationID, keepMessages, userMessage.Clone(), assistant.Clone()); err != nil {
+			return err
+		}
+	}
+	nextMessages := append(llm.CloneMessages(s.messages[:keepMessages]), userMessage.Clone(), assistant.Clone())
+	s.messages = nextMessages
+	s.inFlight = false
+	return nil
 }
 
 func cloneParts(parts []llm.Part) []llm.Part {

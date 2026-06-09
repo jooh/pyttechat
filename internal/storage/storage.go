@@ -25,6 +25,7 @@ type Store interface {
 	DefaultConversationForUser(context.Context, int64) (Conversation, error)
 	Messages(context.Context, int64) ([]llm.Message, error)
 	AppendTurn(context.Context, int64, llm.Message, llm.Message) error
+	ReplaceTailAndAppendTurn(context.Context, int64, int, llm.Message, llm.Message) error
 	Close() error
 }
 

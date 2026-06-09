@@ -380,6 +380,10 @@ func (s authTestStore) AppendTurn(context.Context, int64, llm.Message, llm.Messa
 	return nil
 }
 
+func (s authTestStore) ReplaceTailAndAppendTurn(context.Context, int64, int, llm.Message, llm.Message) error {
+	return nil
+}
+
 func (s authTestStore) Close() error {
 	return nil
 }

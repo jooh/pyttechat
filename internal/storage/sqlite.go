@@ -402,6 +402,63 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
 		return ErrInvalidArgument
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	var maxSequence int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(sequence), 0)
+FROM messages
+WHERE conversation_id = ?
+`, conversationID).Scan(&maxSequence); err != nil {
+		return err
+	}
+	if err := insertTurnAtSequence(ctx, tx, conversationID, maxSequence+1, userMessage, assistantMessage); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) ReplaceTailAndAppendTurn(ctx context.Context, conversationID int64, keepMessages int, userMessage, assistantMessage llm.Message) error {
+	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
+		return ErrInvalidArgument
+	}
+	if keepMessages < 0 {
+		return ErrInvalidArgument
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	var messageCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM messages
+WHERE conversation_id = ?
+`, conversationID).Scan(&messageCount); err != nil {
+		return err
+	}
+	if keepMessages > messageCount {
+		return ErrInvalidArgument
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM messages
+WHERE conversation_id = ? AND sequence > ?
+`, conversationID, keepMessages); err != nil {
+		return err
+	}
+	if err := insertTurnAtSequence(ctx, tx, conversationID, keepMessages+1, userMessage, assistantMessage); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertTurnAtSequence(ctx context.Context, tx *sql.Tx, conversationID int64, firstSequence int, userMessage, assistantMessage llm.Message) error {
 	userParts, err := json.Marshal(userMessage.Parts)
 	if err != nil {
 		return err
@@ -410,25 +467,11 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-
-	var maxSequence int64
-	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MAX(sequence), 0)
-FROM messages
-WHERE conversation_id = ?
-`, conversationID).Scan(&maxSequence); err != nil {
-		return err
-	}
 	createdAt := formatTime(time.Now().UTC())
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at)
 VALUES (?, ?, ?, ?, ?)
-`, conversationID, maxSequence+1, userMessage.Role, string(userParts), createdAt); err != nil {
+`, conversationID, firstSequence, userMessage.Role, string(userParts), createdAt); err != nil {
 		if sqliteIsConstraint(err) {
 			return ErrInvalidArgument
 		}
@@ -437,13 +480,13 @@ VALUES (?, ?, ?, ?, ?)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at)
 VALUES (?, ?, ?, ?, ?)
-`, conversationID, maxSequence+2, assistantMessage.Role, string(assistantParts), createdAt); err != nil {
+`, conversationID, firstSequence+1, assistantMessage.Role, string(assistantParts), createdAt); err != nil {
 		if sqliteIsConstraint(err) {
 			return ErrInvalidArgument
 		}
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 type sqlExecer interface {

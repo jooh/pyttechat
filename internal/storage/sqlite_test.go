@@ -377,6 +377,39 @@ func TestSQLiteMessagesAreOrderedAndPartsJSONRoundTrips(t *testing.T) {
 	}
 }
 
+func TestSQLiteReplaceTailAndAppendTurnTruncatesAndAppends(t *testing.T) {
+	store := newMigratedTestSQLite(t)
+	ctx := context.Background()
+	user := createTestUser(t, store, "dina")
+	conversation, err := store.DefaultConversationForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
+	}
+
+	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer one")); err != nil {
+		t.Fatalf("AppendTurn first error = %v, want nil", err)
+	}
+	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); err != nil {
+		t.Fatalf("AppendTurn second error = %v, want nil", err)
+	}
+
+	err = store.ReplaceTailAndAppendTurn(ctx, conversation.ID, 2, llm.NewTextMessage(llm.RoleUser, "edited second"), llm.NewTextMessage(llm.RoleAssistant, "replacement answer"))
+	if err != nil {
+		t.Fatalf("ReplaceTailAndAppendTurn error = %v, want nil", err)
+	}
+
+	messages, err := store.Messages(ctx, conversation.ID)
+	if err != nil {
+		t.Fatalf("Messages error = %v, want nil", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("message count = %d, want 4", len(messages))
+	}
+	if messages[0].Text() != "first" || messages[1].Text() != "answer one" || messages[2].Text() != "edited second" || messages[3].Text() != "replacement answer" {
+		t.Fatalf("messages = %#v, want first turn plus edited replacement turn", messages)
+	}
+}
+
 func TestSQLiteAppendTurnRejectsInvalidInputWithoutPersisting(t *testing.T) {
 	store := newMigratedTestSQLite(t)
 	ctx := context.Background()
@@ -401,6 +434,34 @@ func TestSQLiteAppendTurnRejectsInvalidInputWithoutPersisting(t *testing.T) {
 	}
 	if len(messages) != 0 {
 		t.Fatalf("message count after rejected appends = %d, want 0", len(messages))
+	}
+}
+
+func TestSQLiteReplaceTailAndAppendTurnRejectsInvalidKeepCount(t *testing.T) {
+	store := newMigratedTestSQLite(t)
+	ctx := context.Background()
+	user := createTestUser(t, store, "edie")
+	conversation, err := store.DefaultConversationForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
+	}
+	if err := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer")); err != nil {
+		t.Fatalf("AppendTurn error = %v, want nil", err)
+	}
+
+	for _, keepMessages := range []int{-1, 3} {
+		err := store.ReplaceTailAndAppendTurn(ctx, conversation.ID, keepMessages, llm.NewTextMessage(llm.RoleUser, "bad"), llm.NewTextMessage(llm.RoleAssistant, "bad answer"))
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("ReplaceTailAndAppendTurn keep=%d error = %v, want ErrInvalidArgument", keepMessages, err)
+		}
+	}
+
+	messages, err := store.Messages(ctx, conversation.ID)
+	if err != nil {
+		t.Fatalf("Messages error = %v, want nil", err)
+	}
+	if len(messages) != 2 || messages[0].Text() != "first" || messages[1].Text() != "answer" {
+		t.Fatalf("messages after rejected replacements = %#v, want original turn intact", messages)
 	}
 }
 

@@ -62,7 +62,7 @@
       <section class="chat-panel" aria-label="Chat messages">
         <div id="messages" class="messages" aria-live="polite">
           {{range .Messages}}
-            <article class="message message-{{.Role}}">
+            <article class="message message-{{.Role}}" data-message-index="{{.Index}}"{{if eq .Role "user"}} data-editable-prompt="true"{{end}}>
               {{range .Statuses}}
                 <div class="message-status" data-status-kind="{{.Kind}}" data-status-state="complete">
                   <button class="message-status-toggle" type="button" data-status-toggle aria-expanded="false" aria-controls="{{.ContentID}}">{{.Label}}</button>
@@ -100,28 +100,53 @@
         </button>
       </section>
 
-      <form id="chat-form" class="composer" aria-label="Chat composer">
-        <div class="composer-box">
-          <label class="sr-only" for="prompt">Message</label>
-          <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
-          <div class="composer-controls">
-            <p id="composer-status" class="composer-status" aria-live="polite">Ready</p>
-            <button id="stop-button" class="icon-button stop-button" type="button" disabled aria-label="Stop response">
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                <path d="M8 8h8v8H8z"></path>
-              </svg>
-              <span class="sr-only">Stop</span>
-            </button>
-            <button id="send-button" class="icon-button send-button" type="submit" aria-label="Send message">
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                <path d="M5 12h14"></path>
-                <path d="m13 6 6 6-6 6"></path>
-              </svg>
-              <span class="sr-only">Send</span>
-            </button>
+      <div id="composer-dock" class="composer-dock">
+        <form id="chat-form" class="composer" aria-label="Chat composer">
+          <div class="composer-box">
+            <label class="sr-only" for="prompt">Message</label>
+            <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
+            <div class="composer-controls">
+              <p id="composer-status" class="composer-status" aria-live="polite">Ready</p>
+              <button id="undo-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M9 7 4 12l5 5"></path>
+                  <path d="M4 12h10a6 6 0 0 1 6 6"></path>
+                </svg>
+                <span class="sr-only">Previous prompt</span>
+              </button>
+              <button id="redo-button" class="icon-button history-button" type="button" disabled aria-label="Next prompt">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m15 7 5 5-5 5"></path>
+                  <path d="M20 12H10a6 6 0 0 0-6 6"></path>
+                </svg>
+                <span class="sr-only">Next prompt</span>
+              </button>
+              <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message">
+                <svg data-action-icon="send" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M12 19V5"></path>
+                  <path d="m5 12 7-7 7 7"></path>
+                </svg>
+                <svg data-action-icon="stop" aria-hidden="true" viewBox="0 0 24 24" hidden>
+                  <path d="M6 6l12 12"></path>
+                  <path d="M18 6 6 18"></path>
+                </svg>
+                <span class="sr-only">Send or stop</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </form>
+        </form>
+      </div>
+      <dialog id="dirty-dialog" class="dirty-dialog" aria-labelledby="dirty-dialog-title">
+        <form method="dialog" class="dirty-dialog-form">
+          <h2 id="dirty-dialog-title">Unsaved prompt changes</h2>
+          <p>Submit the edited prompt or discard it before moving.</p>
+          <div class="dirty-dialog-actions">
+            <button type="submit" value="submit">Submit change</button>
+            <button type="submit" value="discard" class="secondary">Discard change</button>
+            <button type="submit" value="cancel" class="secondary">Keep editing</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>

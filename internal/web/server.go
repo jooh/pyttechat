@@ -182,6 +182,10 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "empty_prompt", "prompt must not be empty")
 		return
 	}
+	if err := session.chat.ValidateReplaceFrom(request.ReplaceFrom); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_replace_from", "replace_from must point to a user message or the end of the conversation")
+		return
+	}
 
 	turn, err := newTurnJobWithContext(context.WithoutCancel(r.Context()), prompt)
 	if err != nil {
@@ -205,6 +209,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		ReasoningEffort:       s.reasoningEffort,
 		RenderingInstructions: chat.WebRenderingInstructions(),
 		TelemetryComponent:    observability.ComponentWeb,
+		ReplaceFrom:           request.ReplaceFrom,
 	})
 
 	writeJSON(w, http.StatusCreated, createTurnResponse{
@@ -687,7 +692,8 @@ func validCSRF(r *http.Request, token string) bool {
 }
 
 type createTurnRequest struct {
-	Prompt string `json:"prompt"`
+	Prompt      string `json:"prompt"`
+	ReplaceFrom *int   `json:"replace_from,omitempty"`
 }
 
 type createTurnResponse struct {
@@ -714,6 +720,7 @@ type authPageData struct {
 }
 
 type viewMessage struct {
+	Index    int
 	Role     string
 	Label    string
 	Text     string
@@ -733,6 +740,7 @@ func viewMessages(messages []llm.Message, renderer assistantRenderer) []viewMess
 	for messageIndex, message := range messages {
 		text := message.Text()
 		view := viewMessage{
+			Index: messageIndex,
 			Role:  string(message.Role),
 			Label: messageRoleLabel(message.Role),
 			Text:  text,
@@ -1076,6 +1084,10 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 
 	stream, err := session.Send(j.ctx, j.prompt, opts)
 	if err != nil {
+		if j.shouldAbort(err) {
+			j.emitAbortedAfterCommit(session, nil, opts)
+			return
+		}
 		j.emitError(err)
 		return
 	}
@@ -1089,11 +1101,19 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 		event, err := stream.Next()
 		if errors.Is(err, io.EOF) {
 			if !completed {
+				if j.wasAbortRequested() {
+					j.emitAbortedAfterCommit(session, stream, opts)
+					return
+				}
 				j.emitError(io.ErrUnexpectedEOF)
 			}
 			return
 		}
 		if err != nil {
+			if j.shouldAbort(err) {
+				j.emitAbortedAfterCommit(session, stream, opts)
+				return
+			}
 			j.emitError(err)
 			return
 		}
@@ -1142,6 +1162,10 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 			return
 		}
 	}
+}
+
+func (j *turnJob) shouldAbort(err error) bool {
+	return j.wasAbortRequested() || errors.Is(err, context.Canceled)
 }
 
 func appendOutputDelta(parts *[]llm.Part, partType llm.PartType, delta string) {
@@ -1200,13 +1224,35 @@ func escapedPlainTextHTML(text string) template.HTML {
 }
 
 func (j *turnJob) emitError(err error) {
-	if j.wasAbortRequested() || errors.Is(err, context.Canceled) {
-		j.emitTerminal("aborted", abortedEvent{
-			TurnID:             j.id,
-			AssistantMessageID: j.assistantMessageID,
-		})
+	if j.shouldAbort(err) {
+		j.emitAborted()
 		return
 	}
+	j.emitStreamError()
+}
+
+func (j *turnJob) emitAbortedAfterCommit(session *chat.Session, stream *chat.TurnStream, opts chat.SendOptions) {
+	var err error
+	if stream != nil {
+		err = stream.CommitPartial()
+	} else {
+		err = session.CommitStopped(context.Background(), j.prompt, opts)
+	}
+	if err != nil {
+		j.emitStreamError()
+		return
+	}
+	j.emitAborted()
+}
+
+func (j *turnJob) emitAborted() {
+	j.emitTerminal("aborted", abortedEvent{
+		TurnID:             j.id,
+		AssistantMessageID: j.assistantMessageID,
+	})
+}
+
+func (j *turnJob) emitStreamError() {
 	j.emitTerminal("stream-error", errorEvent{
 		TurnID:             j.id,
 		AssistantMessageID: j.assistantMessageID,
