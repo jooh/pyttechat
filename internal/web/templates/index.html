@@ -60,7 +60,7 @@
       </header>
 
       <section class="chat-panel" aria-label="Chat messages">
-        <div id="messages" class="messages" aria-live="polite">
+        <div id="messages" class="messages" aria-live="polite" data-next-message-index="{{.NextMessageIndex}}">
           {{range .Messages}}
             <article class="message message-{{.Role}}" data-message-index="{{.Index}}"{{if eq .Role "user"}} data-editable-prompt="true"{{end}}>
               {{range .Statuses}}

@@ -136,11 +136,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	messages := session.chat.Messages()
 	data := pageData{
-		CSRFToken:  session.csrf,
-		ModelLabel: modelDisplayLabel(s.model),
-		Messages:   viewMessages(session.chat.Messages(), s.markdown),
-		Username:   session.username,
+		CSRFToken:        session.csrf,
+		ModelLabel:       modelDisplayLabel(s.model),
+		Messages:         viewMessages(messages, s.markdown),
+		NextMessageIndex: len(messages),
+		Username:         session.username,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.template.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -704,10 +706,11 @@ type createTurnResponse struct {
 }
 
 type pageData struct {
-	CSRFToken  string
-	ModelLabel string
-	Username   string
-	Messages   []viewMessage
+	CSRFToken        string
+	ModelLabel       string
+	Username         string
+	Messages         []viewMessage
+	NextMessageIndex int
 }
 
 type authPageData struct {

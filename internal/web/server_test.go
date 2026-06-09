@@ -1725,6 +1725,37 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	}
 }
 
+func TestIndexKeepsNextMessageIndexForHiddenEmptyAssistant(t *testing.T) {
+	handler := NewServer(Options{Client: dummy.NewClient()})
+	chatSession := chat.NewService(dummy.NewClient()).NewSession()
+	if err := chatSession.CommitStopped(context.Background(), "stopped", chat.SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+	handler.sessions["sess_test"] = &browserSession{
+		id:    "sess_test",
+		csrf:  "csrf_test",
+		chat:  chatSession,
+		turns: map[string]*turnJob{},
+	}
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body = %q", recorder.Code, body)
+	}
+	if !strings.Contains(body, `data-next-message-index="2"`) {
+		t.Fatalf("GET / body = %q, want next message index to include hidden empty assistant", body)
+	}
+	if !strings.Contains(body, `data-message-index="0"`) || strings.Contains(body, `data-message-index="1"`) {
+		t.Fatalf("GET / body = %q, want only visible user message indexed while preserving next index", body)
+	}
+}
+
 func TestModelDisplayLabelDefaultsWhenModelUnset(t *testing.T) {
 	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
 	defer server.Close()

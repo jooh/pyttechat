@@ -125,6 +125,10 @@
     messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
       maxIndex = Math.max(maxIndex, messageIndex(article));
     });
+    const serverIndex = Number.parseInt(messages.dataset.nextMessageIndex || '', 10);
+    if (Number.isFinite(serverIndex) && serverIndex >= 0) {
+      return Math.max(serverIndex, maxIndex + 1);
+    }
     return maxIndex + 1;
   }
 
@@ -492,13 +496,34 @@
   }
 
   function truncateMessagesFrom(index) {
+    const snapshot = {
+      articles: [],
+      nextMessageIndex,
+    };
     messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
       if (messageIndex(article) >= index) {
+        snapshot.articles.push(article);
         article.remove();
       }
     });
     nextMessageIndex = index;
     ensureEmptyState();
+    updateScrollButton();
+    return snapshot;
+  }
+
+  function restoreTruncatedMessages(snapshot) {
+    if (!snapshot) {
+      return;
+    }
+    const empty = messages.querySelector('.message-empty');
+    if (empty) {
+      empty.remove();
+    }
+    snapshot.articles.forEach(function (article) {
+      insertMessage(article);
+    });
+    nextMessageIndex = snapshot.nextMessageIndex;
     updateScrollButton();
   }
 
@@ -1115,8 +1140,9 @@
 
     const replaceFrom = currentEditIndex;
     moveComposerToDockForSubmit();
+    let truncatedSnapshot = null;
     if (replaceFrom !== null) {
-      truncateMessagesFrom(replaceFrom);
+      truncatedSnapshot = truncateMessagesFrom(replaceFrom);
     }
 
     const userIndex = replaceFrom === null ? nextMessageIndex : replaceFrom;
@@ -1140,6 +1166,7 @@
     } catch (error) {
       creatingTurn = false;
       discardTurn(user, assistant);
+      restoreTruncatedMessages(truncatedSnapshot);
       finishTurn('Message not sent');
     }
   });
