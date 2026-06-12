@@ -892,6 +892,10 @@ button {
   white-space: nowrap;
 }
 
+.composer-status:empty {
+  display: none;
+}
+
 .icon-button {
   border-radius: 999px;
 }

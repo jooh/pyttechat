@@ -111,7 +111,7 @@
 
   function setStatus(text) {
     if (composerStatus) {
-      composerStatus.textContent = text;
+      composerStatus.textContent = text || '';
     }
   }
 
@@ -617,7 +617,7 @@
     abortRequested = false;
     creatingTurn = false;
     updateComposerState();
-    setStatus(status || 'Ready');
+    setStatus(status || '');
   }
 
   function markTurnError(assistant, message) {
@@ -930,7 +930,7 @@
       if (currentTurn === turn) {
         abortRequested = false;
         updateComposerState();
-        setStatus('Generating response');
+        setStatus('');
       }
       throw error;
     }
@@ -1028,7 +1028,7 @@
 
     currentSource.onopen = function () {
       clearStreamErrorTimer();
-      setStatus('Generating response');
+      setStatus('');
     };
 
     currentSource.addEventListener('preview', function (event) {
@@ -1082,7 +1082,7 @@
         removeMessage(assistant);
       }
       scrollToBottom(false, wasNearBottom);
-      finishTurn('Response complete');
+      finishTurn();
     });
 
     currentSource.addEventListener('aborted', function () {

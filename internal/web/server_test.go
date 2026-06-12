@@ -85,6 +85,7 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`class="chat-panel"`,
 		`id="scroll-bottom"`,
 		`id="composer-status"`,
+		`<p id="composer-status" class="composer-status" aria-live="polite"></p>`,
 		`id="composer-dock"`,
 		`id="undo-button"`,
 		`id="redo-button"`,
@@ -789,6 +790,7 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`.action-button`,
 		`.history-button`,
 		`.dirty-dialog`,
+		`.composer-status:empty`,
 		`animation: status-sweep 2.2s`,
 		`--status-sweep-low: rgb(32 32 32);`,
 		`min-height: 2.1rem;`,
@@ -852,6 +854,14 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	}
 	if strings.Contains(body, `prompt.focus()`) {
 		t.Fatalf("app JS = %q, did not expect turn completion to focus composer", body)
+	}
+	for _, unwanted := range []string{
+		`Generating response`,
+		`Response complete`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("app JS = %q, did not expect redundant composer status %q", body, unwanted)
+		}
 	}
 
 	response, body = get(t, client, server.URL+"/assets/theme-init.js")
