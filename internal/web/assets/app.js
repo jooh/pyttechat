@@ -10,7 +10,9 @@
   const actionIcons = actionButton ? actionButton.querySelectorAll('[data-action-icon]') : [];
   const undoButton = document.getElementById('undo-button');
   const redoButton = document.getElementById('redo-button');
+  const ffwdButton = document.getElementById('ffwd-button');
   const composerStatus = document.getElementById('composer-status');
+  const composerEndTarget = document.getElementById('composer-end-target');
   const dirtyDialog = document.getElementById('dirty-dialog');
   const themeToggle = document.querySelector('[data-theme-toggle]');
   const themeIcons = themeToggle ? themeToggle.querySelectorAll('[data-theme-icon]') : [];
@@ -27,6 +29,8 @@
   let streamErrorTimer = null;
   let abortRequested = false;
   let creatingTurn = false;
+  let resumableTurn = null;
+  let resumableAssistant = null;
   let statusIDCounter = 0;
   let nextMessageIndex = initialNextMessageIndex();
   let currentEditIndex = null;
@@ -115,6 +119,24 @@
     }
   }
 
+  function clearResumableTurn() {
+    resumableTurn = null;
+    resumableAssistant = null;
+  }
+
+  function setResumableTurn(turn, assistant) {
+    if (!turn || !assistant) {
+      clearResumableTurn();
+      return;
+    }
+    resumableTurn = turn;
+    resumableAssistant = assistant;
+  }
+
+  function canResumeResponse() {
+    return Boolean(resumableTurn && resumableAssistant && currentEditIndex === null && prompt.value.trim() === '' && !currentTurn && !creatingTurn);
+  }
+
   function messageIndex(article) {
     const value = Number.parseInt(article?.dataset.messageIndex || '', 10);
     return Number.isFinite(value) ? value : -1;
@@ -166,6 +188,17 @@
 
   function updatePromptHistoryState() {
     const activeIndex = currentEditIndex;
+    const data = composerDock.dataset;
+    if (activeIndex === null) {
+      data.endActive = 'true';
+      delete data.composerDetached;
+    } else {
+      delete data.endActive;
+      data.composerDetached = 'true';
+    }
+    if (composerEndTarget) {
+      composerEndTarget.hidden = activeIndex === null;
+    }
     messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
       const index = messageIndex(article);
       const data = article.dataset;
@@ -322,7 +355,7 @@
     clearEditingArticle();
 
     if (targetIndex === null) {
-      composerDock.append(form);
+      composerDock.insertBefore(form, composerEndTarget || null);
       currentEditIndex = null;
       prompt.value = dockPromptValue;
       originalPromptValue = dockPromptValue;
@@ -349,7 +382,7 @@
   function moveComposerToDockForSubmit() {
     const firstRect = form.getBoundingClientRect();
     clearEditingArticle();
-    composerDock.append(form);
+    composerDock.insertBefore(form, composerEndTarget || null);
     currentEditIndex = null;
     dockPromptValue = '';
     updatePromptHistoryState();
@@ -601,14 +634,17 @@
 
   function updateComposerState() {
     const submitting = Boolean(currentTurn) || creatingTurn;
+    const canResume = canResumeResponse();
     if (actionButton) {
-      const state = currentTurn ? (abortRequested ? 'stopping' : 'stop') : 'send';
+      const state = currentTurn ? (abortRequested ? 'pausing' : 'pause') : (canResume ? 'resume' : 'send');
+      const label = currentTurn ? (abortRequested ? 'Pausing response' : 'Pause response') : (canResume ? 'Resume response' : 'Send message');
+      const iconName = currentTurn ? 'pause' : 'play';
       actionButton.dataset.actionState = state;
-      actionButton.disabled = currentTurn ? abortRequested : creatingTurn || prompt.value.trim() === '';
-      actionButton.setAttribute('aria-label', currentTurn ? (abortRequested ? 'Stopping response' : 'Stop response') : 'Send message');
-      actionButton.title = currentTurn ? 'Stop response' : 'Send message';
+      actionButton.disabled = currentTurn ? abortRequested : creatingTurn || (!canResume && prompt.value.trim() === '');
+      actionButton.setAttribute('aria-label', label);
+      actionButton.title = label;
       actionIcons.forEach(function (icon) {
-        icon.hidden = icon.dataset.actionIcon !== (currentTurn ? 'stop' : 'send');
+        icon.hidden = icon.dataset.actionIcon !== iconName;
       });
     }
     updateHistoryButtons(submitting);
@@ -624,6 +660,9 @@
     }
     if (redoButton) {
       redoButton.disabled = busy || !canRedo;
+    }
+    if (ffwdButton) {
+      ffwdButton.disabled = busy || currentEditIndex === null;
     }
   }
 
@@ -953,10 +992,23 @@
     }
   }
 
+  async function resumeTurn(turn) {
+    const response = await fetch(`/chat/turns/${encodeURIComponent(turn.turn_id)}/resume`, {
+      method: 'POST',
+      headers: {
+        [csrfHeaderName()]: csrfToken,
+      },
+    });
+    if (!response.ok) {
+      throw new Error((await response.text()) || 'The response could not be resumed.');
+    }
+    return response.json();
+  }
+
   async function requestAbort(turn) {
     abortRequested = true;
     updateComposerState();
-    setStatus('Stopping response');
+    setStatus('');
     try {
       await abortTurn(turn);
     } catch (error) {
@@ -966,6 +1018,44 @@
         setStatus('');
       }
       throw error;
+    }
+  }
+
+  function prepareAssistantForResume(assistant) {
+    if (!assistant) {
+      return;
+    }
+    assistant.article.classList.remove('message-stopped', 'message-error', 'message-complete');
+    assistant.article.classList.add('message-streaming');
+    const note = assistant.article.querySelector('.message-stopped-note');
+    if (note) {
+      note.remove();
+    }
+  }
+
+  async function startResume() {
+    if (!canResumeResponse()) {
+      return;
+    }
+    const sourceTurn = resumableTurn;
+    const assistant = resumableAssistant;
+    creatingTurn = true;
+    prepareAssistantForResume(assistant);
+    updateComposerState();
+    setStatus('Resuming');
+    try {
+      const turn = await resumeTurn(sourceTurn);
+      clearResumableTurn();
+      currentAssistant = assistant;
+      creatingTurn = false;
+      subscribe(turn, null, assistant);
+      updateComposerState();
+    } catch (error) {
+      creatingTurn = false;
+      setResumableTurn(sourceTurn, assistant);
+      markTurnStopped(assistant);
+      updateComposerState();
+      setStatus('Resume failed');
     }
   }
 
@@ -1200,6 +1290,7 @@
       if (!assistantHasContent(assistant)) {
         removeMessage(assistant);
       }
+      clearResumableTurn();
       scrollToBottom(false, wasNearBottom);
       finishTurn();
     });
@@ -1210,7 +1301,8 @@
       }
       clearStreamErrorTimer();
       markTurnStopped(assistant);
-      finishTurn('Response stopped');
+      setResumableTurn(turn, assistant);
+      finishTurn('');
     });
 
     currentSource.addEventListener('stream-error', function (event) {
@@ -1226,6 +1318,7 @@
         message = 'The response stream failed.';
       }
       markTurnError(assistant, message);
+      clearResumableTurn();
       finishTurn('Stream failed');
     });
 
@@ -1259,6 +1352,7 @@
 
     const replaceFrom = currentEditIndex;
     moveComposerToDockForSubmit();
+    clearResumableTurn();
     let truncatedSnapshot = null;
     if (replaceFrom !== null) {
       truncatedSnapshot = truncateMessagesFrom(replaceFrom);
@@ -1326,20 +1420,27 @@
 
   if (actionButton) {
     actionButton.addEventListener('click', async function () {
+      if (canResumeResponse()) {
+        await startResume();
+        return;
+      }
       if (!currentTurn) {
         form.requestSubmit();
         return;
       }
       const turn = currentTurn;
+      const assistant = currentAssistant;
       try {
         await requestAbort(turn);
         if (currentTurn === turn) {
-          markTurnStopped(currentAssistant);
-          finishTurn('Response stopped');
+          markTurnStopped(assistant);
+          setResumableTurn(turn, assistant);
+          finishTurn('');
         }
       } catch (error) {
-        if (currentTurn === turn && currentAssistant) {
-          markTurnError(currentAssistant, 'The turn could not be stopped.');
+        if (currentTurn === turn && assistant) {
+          markTurnError(assistant, 'The turn could not be stopped.');
+          clearResumableTurn();
           finishTurn('Stop failed');
         }
       }
@@ -1352,6 +1453,18 @@
 
   if (redoButton) {
     redoButton.addEventListener('click', navigateForward);
+  }
+
+  if (ffwdButton) {
+    ffwdButton.addEventListener('click', function () {
+      requestNavigation(null, 'end');
+    });
+  }
+
+  if (composerEndTarget) {
+    composerEndTarget.addEventListener('click', function () {
+      requestNavigation(null, 'end');
+    });
   }
 
   if (dirtyDialog) {

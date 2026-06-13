@@ -14,6 +14,7 @@ import (
 var (
 	ErrEmptyPrompt        = errors.New("prompt must not be empty")
 	ErrInvalidReplaceFrom = errors.New("replace_from must point to a user message or the end of the conversation")
+	ErrInvalidResume      = errors.New("resume requires a stopped assistant response")
 	ErrTurnInProgress     = errors.New("turn already in progress")
 )
 
@@ -34,6 +35,7 @@ type Store interface {
 	Messages(context.Context, int64) ([]llm.Message, error)
 	AppendTurn(context.Context, int64, llm.Message, llm.Message) error
 	ReplaceTailAndAppendTurn(context.Context, int64, int, llm.Message, llm.Message) error
+	ReplaceLastAssistant(context.Context, int64, llm.Message) error
 }
 
 func (s Service) NewSession() *Session {
@@ -71,6 +73,14 @@ type SendOptions struct {
 	RenderingInstructions string
 	TelemetryComponent    string
 	ReplaceFrom           *int
+}
+
+type ResumeOptions struct {
+	Model                 string
+	ReasoningEffort       string
+	RenderingInstructions string
+	TelemetryComponent    string
+	ContinuationPrompt    string
 }
 
 func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*TurnStream, error) {
@@ -130,6 +140,66 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 	}, nil
 }
 
+func (s *Session) ResumeLastAssistant(ctx context.Context, opts ResumeOptions) (*TurnStream, error) {
+	prompt := strings.TrimSpace(opts.ContinuationPrompt)
+	if prompt == "" {
+		return nil, ErrEmptyPrompt
+	}
+
+	ctx, span := observability.StartSpan(ctx, "chat.turn.resume", opts.TelemetryComponent)
+	startedAt := time.Now()
+	defer span.End()
+
+	request := llm.Request{
+		Model:        opts.Model,
+		Instructions: strings.TrimSpace(opts.RenderingInstructions),
+	}
+	if effort := strings.TrimSpace(opts.ReasoningEffort); effort != "" {
+		request.Reasoning = llm.ReasoningOptions{
+			Summary: "auto",
+			Effort:  effort,
+		}
+	}
+
+	continuationMessage := llm.NewTextMessage(llm.RoleUser, prompt)
+
+	s.mu.Lock()
+	if s.inFlight {
+		s.mu.Unlock()
+		observability.RecordSpanError(span, ErrTurnInProgress)
+		return nil, ErrTurnInProgress
+	}
+	lastIndex := len(s.messages) - 1
+	if lastIndex < 0 || s.messages[lastIndex].Role != llm.RoleAssistant {
+		s.mu.Unlock()
+		observability.RecordSpanError(span, ErrInvalidResume)
+		return nil, ErrInvalidResume
+	}
+	baseAssistant := s.messages[lastIndex].Clone()
+	request.Messages = append(llm.CloneMessages(s.messages), continuationMessage.Clone())
+	s.inFlight = true
+	s.mu.Unlock()
+
+	observability.ChatTurnStarted(ctx)
+	stream, err := s.client.Stream(ctx, request)
+	if err != nil {
+		s.releaseTurn()
+		observability.ChatTurnFailed(ctx, startedAt, err)
+		observability.RecordSpanError(span, err)
+		return nil, err
+	}
+
+	return &TurnStream{
+		session:             s,
+		stream:              stream,
+		userMessage:         continuationMessage,
+		ctx:                 ctx,
+		startedAt:           startedAt,
+		resumeBaseAssistant: baseAssistant,
+		resume:              true,
+	}, nil
+}
+
 func (s *Session) Messages() []llm.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -176,6 +246,9 @@ type TurnStream struct {
 	completed      bool
 	finalized      bool
 	recorded       bool
+
+	resumeBaseAssistant llm.Message
+	resume              bool
 }
 
 func (s *TurnStream) Next() (llm.Event, error) {
@@ -284,11 +357,20 @@ func (s *TurnStream) finalize(allowIncomplete bool) error {
 		Role:  llm.RoleAssistant,
 		Parts: cloneParts(s.assistantParts),
 	}
+	if s.resume {
+		assistant.Parts = mergeAssistantParts(s.resumeBaseAssistant.Parts, assistant.Parts)
+	}
 
 	s.session.mu.Lock()
 	defer s.session.mu.Unlock()
-	if err := s.session.replaceTailLocked(context.Background(), s.keepMessages, s.userMessage, assistant); err != nil {
-		return err
+	if s.resume {
+		if err := s.session.replaceLastAssistantLocked(context.Background(), assistant); err != nil {
+			return err
+		}
+	} else {
+		if err := s.session.replaceTailLocked(context.Background(), s.keepMessages, s.userMessage, assistant); err != nil {
+			return err
+		}
 	}
 	s.finalized = true
 	return nil
@@ -364,6 +446,52 @@ func (s *Session) replaceTailLocked(ctx context.Context, keepMessages int, userM
 	s.messages = nextMessages
 	s.inFlight = false
 	return nil
+}
+
+func (s *Session) replaceLastAssistantLocked(ctx context.Context, assistant llm.Message) error {
+	lastIndex := len(s.messages) - 1
+	if lastIndex < 0 || s.messages[lastIndex].Role != llm.RoleAssistant || assistant.Role != llm.RoleAssistant {
+		return ErrInvalidResume
+	}
+	if s.store != nil {
+		if err := s.store.ReplaceLastAssistant(ctx, s.conversationID, assistant.Clone()); err != nil {
+			return err
+		}
+	}
+	nextMessages := llm.CloneMessages(s.messages)
+	nextMessages[lastIndex] = assistant.Clone()
+	s.messages = nextMessages
+	s.inFlight = false
+	return nil
+}
+
+func mergeAssistantParts(base, continuation []llm.Part) []llm.Part {
+	parts := cloneParts(base)
+	for _, part := range continuation {
+		if part.Type == "" {
+			continue
+		}
+		lastIndex := len(parts) - 1
+		if lastIndex >= 0 && canMergeAssistantParts(parts[lastIndex], part) {
+			parts[lastIndex].Text += part.Text
+			if len(part.Summary) > 0 {
+				parts[lastIndex].Summary = append(parts[lastIndex].Summary, part.Summary...)
+			}
+			if part.ID != "" {
+				parts[lastIndex].ID = part.ID
+			}
+			if part.EncryptedContent != "" {
+				parts[lastIndex].EncryptedContent = part.EncryptedContent
+			}
+			continue
+		}
+		parts = append(parts, part.Clone())
+	}
+	return parts
+}
+
+func canMergeAssistantParts(left, right llm.Part) bool {
+	return (left.Type == llm.PartText || left.Type == llm.PartReasoning) && left.Type == right.Type
 }
 
 func cloneParts(parts []llm.Part) []llm.Part {

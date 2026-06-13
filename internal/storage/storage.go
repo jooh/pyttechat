@@ -26,6 +26,7 @@ type Store interface {
 	Messages(context.Context, int64) ([]llm.Message, error)
 	AppendTurn(context.Context, int64, llm.Message, llm.Message) error
 	ReplaceTailAndAppendTurn(context.Context, int64, int, llm.Message, llm.Message) error
+	ReplaceLastAssistant(context.Context, int64, llm.Message) error
 	Close() error
 }
 

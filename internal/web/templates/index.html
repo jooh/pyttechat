@@ -123,20 +123,29 @@
                 </svg>
                 <span class="sr-only">Next prompt</span>
               </button>
+              <button id="ffwd-button" class="icon-button history-button" type="button" disabled aria-label="Latest prompt" title="Latest prompt">
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m5 5 7 7-7 7"></path>
+                  <path d="m12 5 7 7-7 7"></path>
+                </svg>
+                <span class="sr-only">Latest prompt</span>
+              </button>
               <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message" title="Send message">
-                <svg data-action-icon="send" aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="M12 19V5"></path>
-                  <path d="m5 12 7-7 7 7"></path>
+                <svg data-action-icon="play" aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z"></path>
                 </svg>
-                <svg data-action-icon="stop" aria-hidden="true" viewBox="0 0 24 24" hidden>
-                  <path d="M6 6l12 12"></path>
-                  <path d="M18 6 6 18"></path>
+                <svg data-action-icon="pause" aria-hidden="true" viewBox="0 0 24 24" hidden>
+                  <path d="M9 5v14"></path>
+                  <path d="M15 5v14"></path>
                 </svg>
-                <span class="sr-only">Send or stop</span>
+                <span class="sr-only">Send, pause, or resume</span>
               </button>
             </div>
           </div>
         </form>
+        <button id="composer-end-target" class="composer-end-target" type="button" data-composer-end-target aria-label="Latest prompt" title="Latest prompt" hidden>
+          <span class="sr-only">Latest prompt</span>
+        </button>
       </div>
       <dialog id="dirty-dialog" class="dirty-dialog" aria-labelledby="dirty-dialog-title">
         <form method="dialog" class="dirty-dialog-form">

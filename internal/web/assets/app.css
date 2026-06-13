@@ -290,7 +290,7 @@ button {
   bottom: 0.75rem;
   z-index: 3;
   box-shadow:
-    0 0.45rem 1.5rem rgba(0, 0, 0, 0.18),
+    0 0.75rem 2rem rgba(0, 0, 0, 0.24),
     0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 34%, transparent);
 }
 
@@ -875,6 +875,12 @@ button {
   box-shadow: none;
 }
 
+.composer-dock[data-end-active="true"] .composer-box {
+  box-shadow:
+    0 -0.75rem 2rem rgba(0, 0, 0, 0.16),
+    0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 28%, transparent);
+}
+
 .composer-box:focus-within {
   border-color: var(--pico-primary);
   box-shadow:
@@ -884,7 +890,34 @@ button {
 
 .composer-dock .composer-box:focus-within {
   border-color: var(--pico-background-color);
-  box-shadow: 0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
+  box-shadow:
+    0 -0.75rem 2rem rgba(0, 0, 0, 0.16),
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
+}
+
+.composer-end-target {
+  display: none;
+  width: 100%;
+  max-width: 100%;
+  min-height: 3.45rem;
+  margin: 0;
+  padding: 0.55rem;
+  border: var(--pico-border-width) solid var(--pico-color);
+  border-radius: 0.9rem;
+  background: var(--pico-color);
+  color: var(--pico-background-color);
+  box-shadow: none;
+}
+
+.composer-dock[data-composer-detached="true"] .composer-end-target {
+  display: block;
+}
+
+.composer-end-target:hover,
+.composer-end-target:focus-visible {
+  box-shadow:
+    0 -0.45rem 1.5rem rgba(0, 0, 0, 0.12),
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
 }
 
 .composer textarea {
@@ -954,8 +987,9 @@ button {
   color: var(--icon-button-hover-color);
 }
 
-.action-button[data-action-state="stop"],
-.action-button[data-action-state="stopping"] {
+.action-button[data-action-state="pause"],
+.action-button[data-action-state="pausing"],
+.action-button[data-action-state="resume"] {
   color: var(--icon-button-color);
 }
 

@@ -227,6 +227,30 @@ func TestSessionValidateReplaceFromAndCommitStopped(t *testing.T) {
 	}
 }
 
+func TestSessionCommitStoppedRejectsInvalidReplaceFromAndStoreFailure(t *testing.T) {
+	session := NewService(dummy.NewClient()).NewSession()
+	invalidReplaceFrom := 1
+	if err := session.CommitStopped(context.Background(), "bad edit", SendOptions{ReplaceFrom: &invalidReplaceFrom}); !errors.Is(err, ErrInvalidReplaceFrom) {
+		t.Fatalf("CommitStopped(invalid replace_from) error = %v, want ErrInvalidReplaceFrom", err)
+	}
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf("messages after invalid stopped edit = %#v, want none", messages)
+	}
+
+	store := &chatStore{appendErr: errors.New("stopped append failed")}
+	persistent, err := NewPersistentService(dummy.NewClient(), store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+	err = persistent.CommitStopped(context.Background(), "hello", SendOptions{})
+	if err == nil || !strings.Contains(err.Error(), "stopped append failed") {
+		t.Fatalf("CommitStopped store error = %v, want stopped append failed", err)
+	}
+	if messages := persistent.Messages(); len(messages) != 0 {
+		t.Fatalf("messages after failed stopped append = %#v, want none", messages)
+	}
+}
+
 func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
 	store := &chatStore{
 		messages: []llm.Message{
@@ -387,6 +411,217 @@ func TestSessionCanCommitPartialTurn(t *testing.T) {
 	}
 	if messages[1].Parts[0].Type != llm.PartReasoning || messages[1].Parts[0].Text != "thinking" {
 		t.Fatalf("assistant parts = %#v, want partial reasoning and text", messages[1].Parts)
+	}
+}
+
+func TestSessionResumeLastAssistantContinuesPartialWithoutPersistingHiddenPrompt(t *testing.T) {
+	client := dummy.NewClient(dummy.Turn{TextChunks: []string{" continued"}})
+	session := NewService(client).NewSession()
+	if err := session.CommitStopped(context.Background(), "hello", SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+	session.messages[1] = llm.NewTextMessage(llm.RoleAssistant, "partial")
+
+	stream, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{
+		ContinuationPrompt:    "Continue from where you stopped.",
+		Model:                 "resume-model",
+		ReasoningEffort:       "medium",
+		TelemetryComponent:    "test",
+		RenderingInstructions: "render",
+	})
+	if err != nil {
+		t.Fatalf("ResumeLastAssistant error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	requests := client.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if requests[0].Instructions != "render" {
+		t.Fatalf("request instructions = %q, want render", requests[0].Instructions)
+	}
+	if requests[0].Model != "resume-model" {
+		t.Fatalf("request model = %q, want resume-model", requests[0].Model)
+	}
+	if requests[0].Reasoning.Effort != "medium" || requests[0].Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning = %#v, want medium effort with auto summary", requests[0].Reasoning)
+	}
+	if got := requests[0].Messages; len(got) != 3 || got[0].Text() != "hello" || got[1].Text() != "partial" || got[2].Role != llm.RoleUser || got[2].Text() != "Continue from where you stopped." {
+		t.Fatalf("resume request messages = %#v, want prior turn plus hidden continuation prompt", requests[0].Messages)
+	}
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want original user plus merged assistant", len(messages))
+	}
+	if messages[0].Text() != "hello" || messages[1].Text() != "partial continued" {
+		t.Fatalf("messages = %#v, want hidden prompt omitted and assistant merged", messages)
+	}
+}
+
+func TestSessionResumeLastAssistantRejectsInvalidHistory(t *testing.T) {
+	session := NewService(dummy.NewClient()).NewSession()
+	if _, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"}); !errors.Is(err, ErrInvalidResume) {
+		t.Fatalf("ResumeLastAssistant(empty) error = %v, want ErrInvalidResume", err)
+	}
+	if err := session.CommitStopped(context.Background(), "hello", SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+	session.messages = session.messages[:1]
+	if _, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"}); !errors.Is(err, ErrInvalidResume) {
+		t.Fatalf("ResumeLastAssistant(no assistant) error = %v, want ErrInvalidResume", err)
+	}
+	if _, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "  "}); !errors.Is(err, ErrEmptyPrompt) {
+		t.Fatalf("ResumeLastAssistant(empty prompt) error = %v, want ErrEmptyPrompt", err)
+	}
+}
+
+func TestPersistentSessionResumeReplacesLastAssistant(t *testing.T) {
+	store := &chatStore{
+		messages: []llm.Message{
+			llm.NewTextMessage(llm.RoleUser, "stored prompt"),
+			llm.NewTextMessage(llm.RoleAssistant, "partial"),
+		},
+	}
+	client := dummy.NewClient(dummy.Turn{TextChunks: []string{" continued"}})
+	session, err := NewPersistentService(client, store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+
+	stream, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"})
+	if err != nil {
+		t.Fatalf("ResumeLastAssistant error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	if len(store.replacedAssistant) != 1 {
+		t.Fatalf("replaced assistant count = %d, want 1", len(store.replacedAssistant))
+	}
+	replaced := store.replacedAssistant[0]
+	if replaced.conversationID != 42 || replaced.assistant.Text() != "partial continued" {
+		t.Fatalf("replaced assistant = %#v, want merged assistant in conversation 42", replaced)
+	}
+	if len(store.replaced) != 0 || len(store.appended) != 0 {
+		t.Fatalf("visible turn persistence = appended %d replaced %d, want none", len(store.appended), len(store.replaced))
+	}
+}
+
+func TestPersistentSessionResumeReplaceFailureKeepsPartialAndReleasesTurn(t *testing.T) {
+	store := &chatStore{
+		messages: []llm.Message{
+			llm.NewTextMessage(llm.RoleUser, "stored prompt"),
+			llm.NewTextMessage(llm.RoleAssistant, "partial"),
+		},
+		appendErr: errors.New("replace failed"),
+	}
+	client := dummy.NewClient(
+		dummy.Turn{TextChunks: []string{" failed continuation"}},
+		dummy.Turn{TextChunks: []string{" continued"}},
+	)
+	session, err := NewPersistentService(client, store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+
+	stream, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"})
+	if err != nil {
+		t.Fatalf("ResumeLastAssistant error = %v, want nil", err)
+	}
+	for {
+		_, err = stream.Next()
+		if err != nil {
+			break
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), "replace failed") {
+		t.Fatalf("stream error = %v, want replace failed", err)
+	}
+	if messages := session.Messages(); len(messages) != 2 || messages[1].Text() != "partial" {
+		t.Fatalf("messages after failed resume = %#v, want original partial assistant", messages)
+	}
+
+	store.appendErr = nil
+	retry, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "retry"})
+	if err != nil {
+		t.Fatalf("retry ResumeLastAssistant error = %v, want nil", err)
+	}
+	collectEvents(t, retry)
+	if messages := session.Messages(); len(messages) != 2 || messages[1].Text() != "partial continued" {
+		t.Fatalf("messages after retry = %#v, want resumed assistant", messages)
+	}
+}
+
+func TestSessionResumeLastAssistantReleasesTurnWhenStreamFailsToStart(t *testing.T) {
+	session := NewService(streamStartFailingClient{}).NewSession()
+	if err := session.CommitStopped(context.Background(), "hello", SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+
+	_, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"})
+	if err == nil {
+		t.Fatalf("ResumeLastAssistant error = nil, want stream start failure")
+	}
+
+	session.client = eventClient{events: []llm.Event{{Type: llm.EventCompleted}}}
+	stream, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "retry"})
+	if err != nil {
+		t.Fatalf("retry ResumeLastAssistant error = %v, want nil", err)
+	}
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Fatalf("retry Close() error = %v, want nil", closeErr)
+	}
+}
+
+func TestSessionResumeLastAssistantRejectsConcurrentTurn(t *testing.T) {
+	session := NewService(eventClient{}).NewSession()
+	if err := session.CommitStopped(context.Background(), "hello", SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+
+	stream, err := session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "continue"})
+	if err != nil {
+		t.Fatalf("ResumeLastAssistant error = %v, want nil", err)
+	}
+	_, err = session.ResumeLastAssistant(context.Background(), ResumeOptions{ContinuationPrompt: "again"})
+	if !errors.Is(err, ErrTurnInProgress) {
+		t.Fatalf("concurrent ResumeLastAssistant error = %v, want ErrTurnInProgress", err)
+	}
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Fatalf("Close() error = %v, want nil", closeErr)
+	}
+}
+
+func TestMergeAssistantPartsBranchVariants(t *testing.T) {
+	parts := mergeAssistantParts([]llm.Part{
+		{Type: llm.PartText, Text: "partial"},
+		{Type: llm.PartReasoning, Text: "rough"},
+	}, []llm.Part{
+		{},
+		{Type: llm.PartReasoning, Text: " final", ID: "rs_1", Summary: []string{"summary"}, EncryptedContent: "encrypted"},
+		{Type: llm.PartText, Text: " answer"},
+		{Type: llm.PartText, Text: " continued"},
+		{Type: llm.PartError, Text: "warning"},
+	})
+
+	if len(parts) != 4 {
+		t.Fatalf("parts = %#v, want merged text/reasoning plus error", parts)
+	}
+	if parts[0].Text != "partial" {
+		t.Fatalf("first text part = %#v, want unchanged base text before reasoning", parts[0])
+	}
+	if parts[1].Text != "rough final" || parts[1].ID != "rs_1" || len(parts[1].Summary) != 1 || parts[1].EncryptedContent != "encrypted" {
+		t.Fatalf("reasoning part = %#v, want merged continuation metadata", parts[1])
+	}
+	if parts[2].Text != " answer continued" {
+		t.Fatalf("continuation text part = %#v, want adjacent text merged", parts[2])
+	}
+	if parts[3].Type != llm.PartError {
+		t.Fatalf("last part = %#v, want non-mergeable error appended", parts[3])
+	}
+	if got := mergeAssistantParts(nil, nil); got != nil {
+		t.Fatalf("mergeAssistantParts(nil, nil) = %#v, want nil", got)
 	}
 }
 
@@ -762,6 +997,24 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 	}
 }
 
+func TestTurnStreamRecordErrorTreatsContextCancellationAsCancelled(t *testing.T) {
+	cancelled := &TurnStream{}
+	cancelled.recordError(context.Canceled)
+	if !cancelled.recorded {
+		t.Fatalf("cancelled stream was not recorded")
+	}
+
+	failed := &TurnStream{}
+	failed.recordError(errors.New("stream failed"))
+	if !failed.recorded {
+		t.Fatalf("failed stream was not recorded")
+	}
+	failed.recordError(context.Canceled)
+	if !failed.recorded {
+		t.Fatalf("second recordError changed recorded state")
+	}
+}
+
 func TestSessionMessagesReturnsDeepCopy(t *testing.T) {
 	session := NewService(eventClient{
 		events: []llm.Event{
@@ -833,11 +1086,12 @@ func (*eventStream) Close() error {
 }
 
 type chatStore struct {
-	messages    []llm.Message
-	messagesErr error
-	appended    []appendedTurn
-	replaced    []replacedTurn
-	appendErr   error
+	messages          []llm.Message
+	messagesErr       error
+	appended          []appendedTurn
+	replaced          []replacedTurn
+	replacedAssistant []replacedAssistant
+	appendErr         error
 }
 
 type appendedTurn struct {
@@ -850,6 +1104,11 @@ type replacedTurn struct {
 	conversationID int64
 	keepMessages   int
 	user           llm.Message
+	assistant      llm.Message
+}
+
+type replacedAssistant struct {
+	conversationID int64
 	assistant      llm.Message
 }
 
@@ -880,6 +1139,17 @@ func (s *chatStore) ReplaceTailAndAppendTurn(_ context.Context, conversationID i
 		conversationID: conversationID,
 		keepMessages:   keepMessages,
 		user:           user.Clone(),
+		assistant:      assistant.Clone(),
+	})
+	return nil
+}
+
+func (s *chatStore) ReplaceLastAssistant(_ context.Context, conversationID int64, assistant llm.Message) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
+	s.replacedAssistant = append(s.replacedAssistant, replacedAssistant{
+		conversationID: conversationID,
 		assistant:      assistant.Clone(),
 	})
 	return nil
