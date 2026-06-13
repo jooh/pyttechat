@@ -164,6 +164,25 @@
     return body ? body.textContent || '' : '';
   }
 
+  function updatePromptHistoryState() {
+    const activeIndex = currentEditIndex;
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      const index = messageIndex(article);
+      const data = article.dataset;
+      if (activeIndex !== null && index === activeIndex && article.matches('.message-user[data-editable-prompt="true"]')) {
+        data.activePrompt = 'true';
+      } else {
+        delete data.activePrompt;
+      }
+
+      if (activeIndex !== null && index > activeIndex) {
+        data.afterActivePrompt = 'true';
+      } else {
+        delete data.afterActivePrompt;
+      }
+    });
+  }
+
   function hasDirtyPrompt() {
     return prompt.value !== originalPromptValue;
   }
@@ -216,6 +235,7 @@
     if (message && message.article && message.article.parentNode === messages) {
       message.article.remove();
       ensureEmptyState();
+      updatePromptHistoryState();
       updateScrollButton();
     }
   }
@@ -319,6 +339,7 @@
     }
 
     syncPromptHeight();
+    updatePromptHistoryState();
     updateComposerState();
     animateComposerFrom(firstRect);
     scrollComposerIntoView(targetIndex);
@@ -331,6 +352,7 @@
     composerDock.append(form);
     currentEditIndex = null;
     dockPromptValue = '';
+    updatePromptHistoryState();
     animateComposerFrom(firstRect);
   }
 
@@ -490,9 +512,6 @@
     messageText.className = role === 'assistant' ? 'message-text markdown-body' : 'message-text message-plain';
     messageText.textContent = text || '';
 
-    if (role === 'assistant' && options && options.streaming) {
-      article.append(createThinkingStatus());
-    }
     article.append(messageText);
     const actions = createMessageActions(role);
     if (actions) {
@@ -516,6 +535,7 @@
     });
     nextMessageIndex = index;
     ensureEmptyState();
+    updatePromptHistoryState();
     updateScrollButton();
     return snapshot;
   }
@@ -532,6 +552,7 @@
       insertMessage(article);
     });
     nextMessageIndex = snapshot.nextMessageIndex;
+    updatePromptHistoryState();
     updateScrollButton();
   }
 
@@ -556,6 +577,10 @@
     }
     const status = assistant.article.querySelector('.message-status-content');
     return Boolean(status && status.textContent);
+  }
+
+  function assistantOutputStarted(assistant) {
+    return Boolean(assistant && (assistant.text.textContent || assistant.text.innerHTML));
   }
 
   function setCompletedAt(assistant, completedAt) {
@@ -999,6 +1024,88 @@
     requestNavigation(next ? messageIndex(next) : null, 'start');
   }
 
+  function historyNavigationBusy() {
+    return Boolean(currentTurn) || creatingTurn || Boolean(dirtyDialog && dirtyDialog.open);
+  }
+
+  function canNavigateBackward() {
+    return !historyNavigationBusy() && Boolean(userMessageBefore(transcriptPosition()));
+  }
+
+  function canNavigateForward() {
+    return !historyNavigationBusy() && currentEditIndex !== null;
+  }
+
+  function isUndoShortcut(event) {
+    return (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z';
+  }
+
+  function isRedoShortcut(event) {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+      return false;
+    }
+    const key = event.key.toLowerCase();
+    return (key === 'y' && !event.shiftKey) || (key === 'z' && event.shiftKey);
+  }
+
+  function handleHistoryShortcut(event) {
+    if (event.isComposing || event.keyCode === 229) {
+      return false;
+    }
+    if (isUndoShortcut(event) && canNavigateBackward()) {
+      event.preventDefault();
+      navigateBackward();
+      return true;
+    }
+    if (isRedoShortcut(event) && canNavigateForward()) {
+      event.preventDefault();
+      navigateForward();
+      return true;
+    }
+    return false;
+  }
+
+  function isEditablePromptInteractiveTarget(element) {
+    return Boolean(element.closest('a, button, input, label, select, textarea, [contenteditable="true"]'));
+  }
+
+  function editablePromptArticle(element) {
+    const article = element.closest('.message-user[data-editable-prompt="true"][data-message-index]');
+    return article && messages.contains(article) ? article : null;
+  }
+
+  function handleEditablePromptMouseDown(event) {
+    if (!(event.target instanceof Element) || isEditablePromptInteractiveTarget(event.target)) {
+      return;
+    }
+    const article = editablePromptArticle(event.target);
+    if (article) {
+      event.preventDefault();
+    }
+  }
+
+  function handleEditablePromptClick(event) {
+    if (!(event.target instanceof Element) || isEditablePromptInteractiveTarget(event.target)) {
+      return false;
+    }
+    const article = editablePromptArticle(event.target);
+    if (!article) {
+      return false;
+    }
+    const index = messageIndex(article);
+    if (index < 0) {
+      return false;
+    }
+
+    event.preventDefault();
+    if (currentEditIndex === index) {
+      focusPrompt('end');
+      return true;
+    }
+    requestNavigation(index, 'end');
+    return true;
+  }
+
   function caretAtStart() {
     return prompt.selectionStart === 0 && prompt.selectionEnd === 0;
   }
@@ -1051,6 +1158,7 @@
         assistant.article.dataset.messageId = data.assistant_message_id;
         assistant.text.id = `message-body-${data.assistant_message_id}`;
       }
+      completeThinkingStatus(assistant.article);
       assistant.text.innerHTML = data.html || '';
       enhanceMessage(assistant.article);
       scrollToBottom(false, wasNearBottom);
@@ -1064,6 +1172,9 @@
       const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       ensureThinkingStatus(assistant.article).textContent += data.delta || '';
+      if (assistantOutputStarted(assistant)) {
+        completeThinkingStatus(assistant.article);
+      }
       scrollToBottom(false, wasNearBottom);
     });
 
@@ -1183,6 +1294,9 @@
     if (event.isComposing || event.keyCode === 229) {
       return;
     }
+    if (handleHistoryShortcut(event)) {
+      return;
+    }
     if (event.key === 'ArrowUp' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtStart()) {
       event.preventDefault();
       navigateBackward();
@@ -1256,6 +1370,14 @@
     });
   }
 
+  document.addEventListener('keydown', function (event) {
+    if (event.defaultPrevented || event.target === prompt) {
+      return;
+    }
+    handleHistoryShortcut(event);
+  });
+
+  messages.addEventListener('mousedown', handleEditablePromptMouseDown);
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
 
   if (scrollButton) {
@@ -1285,6 +1407,10 @@
 
   document.addEventListener('click', async function (event) {
     if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    if (handleEditablePromptClick(event)) {
       return;
     }
 
@@ -1344,6 +1470,7 @@
   applyThemePreference();
   enhanceAllMessages();
   syncPromptHeight();
+  updatePromptHistoryState();
   updateComposerState();
   updateScrollButton();
 })();

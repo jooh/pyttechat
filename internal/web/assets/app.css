@@ -32,6 +32,12 @@ button {
   --status-sweep-edge: rgb(136 136 136);
   --status-sweep-mid: rgb(192 192 192);
   --status-sweep-low: rgb(248 248 248);
+  --icon-button-color: var(--pico-muted-color);
+  --icon-button-hover-color: var(--pico-color);
+  --icon-button-inverse-color: color-mix(in srgb, var(--pico-background-color) 78%, transparent);
+  --icon-button-inverse-hover-color: var(--pico-background-color);
+  --icon-button-inverse-border-color: color-mix(in srgb, var(--pico-background-color) 30%, transparent);
+  --icon-button-inverse-hover-background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -229,6 +235,14 @@ button {
   overflow-wrap: anywhere;
 }
 
+.message[data-after-active-prompt="true"] {
+  opacity: 0.56;
+  filter: grayscale(0.35);
+  transition:
+    opacity 120ms ease,
+    filter 120ms ease;
+}
+
 .auth-shell {
   display: grid;
   min-height: 100vh;
@@ -264,6 +278,20 @@ button {
   border-radius: 0.5rem;
   background: var(--pico-color);
   color: var(--pico-background-color);
+}
+
+.message-user[data-editable-prompt="true"] {
+  cursor: text;
+}
+
+.message-user[data-active-prompt="true"] {
+  position: sticky;
+  top: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 3;
+  box-shadow:
+    0 0.45rem 1.5rem rgba(0, 0, 0, 0.18),
+    0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 34%, transparent);
 }
 
 .message-assistant {
@@ -911,9 +939,11 @@ button {
 
 .history-button,
 .action-button {
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
   border-color: var(--pico-muted-border-color);
   background: transparent;
-  color: var(--pico-muted-color);
+  color: var(--icon-button-color);
+  box-shadow: none;
 }
 
 .history-button:hover,
@@ -921,12 +951,12 @@ button {
 .action-button:hover,
 .action-button:focus-visible {
   background: var(--pico-muted-border-color);
-  color: var(--pico-color);
+  color: var(--icon-button-hover-color);
 }
 
 .action-button[data-action-state="stop"],
 .action-button[data-action-state="stopping"] {
-  color: var(--pico-del-color);
+  color: var(--icon-button-color);
 }
 
 .icon-button:disabled {
@@ -938,7 +968,7 @@ button {
 }
 
 .message-user[data-editing="true"] {
-  box-shadow: 0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 22%, transparent);
+  cursor: default;
 }
 
 .message-user[data-editing="true"] > .message-text,
@@ -980,14 +1010,14 @@ button {
 .composer-dock .history-button,
 .message-user .action-button,
 .composer-dock .action-button {
-  color: color-mix(in srgb, var(--pico-background-color) 78%, transparent);
+  color: var(--icon-button-inverse-color);
 }
 
 .message-user .history-button,
 .composer-dock .history-button,
 .message-user .action-button,
 .composer-dock .action-button {
-  border-color: color-mix(in srgb, var(--pico-background-color) 30%, transparent);
+  border-color: var(--icon-button-inverse-border-color);
 }
 
 .message-user .history-button:hover,
@@ -998,8 +1028,8 @@ button {
 .composer-dock .action-button:hover,
 .message-user .action-button:focus-visible,
 .composer-dock .action-button:focus-visible {
-  background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
-  color: var(--pico-background-color);
+  background: var(--icon-button-inverse-hover-background);
+  color: var(--icon-button-inverse-hover-color);
 }
 
 .message-stopped .message-stopped-note {
