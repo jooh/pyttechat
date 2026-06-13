@@ -84,12 +84,16 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`gpt-example`,
 		`class="chat-panel"`,
 		`id="scroll-bottom"`,
+		`title="Scroll to latest message"`,
 		`id="composer-status"`,
 		`<p id="composer-status" class="composer-status" aria-live="polite"></p>`,
 		`id="composer-dock"`,
 		`id="undo-button"`,
+		`title="Previous prompt"`,
 		`id="redo-button"`,
+		`title="Next prompt"`,
 		`id="composer-action"`,
+		`title="Send message"`,
 		`data-action-state="send"`,
 		`data-action-icon="send"`,
 		`data-action-icon="stop"`,
@@ -100,6 +104,7 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`id="theme-toggle"`,
 		`data-theme-toggle`,
 		`aria-label="Current theme: system preference"`,
+		`title="Switch theme"`,
 		`data-theme-icon="light"`,
 		`data-theme-icon="dark"`,
 		`<circle cx="12" cy="12" r="4"></circle>`,
@@ -667,6 +672,9 @@ func TestAuthRegisterLoginLogoutAndCSRF(t *testing.T) {
 	if rootCSRF == "" || !strings.Contains(body, "hello") || !strings.Contains(body, "answer") {
 		t.Fatalf("GET / after login body = %q, want persisted history and csrf", body)
 	}
+	if !strings.Contains(body, `aria-label="Sign out" title="Sign out"`) {
+		t.Fatalf("GET / after login body = %q, want sign out tooltip", body)
+	}
 }
 
 func TestAuthPerUserHistoryIsolationAndPersistedReload(t *testing.T) {
@@ -787,9 +795,18 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`@keyframes status-sweep`,
 		`.message-status`,
 		`.message-edit-slot`,
+		`.message-assistant:hover .message-actions`,
+		`pointer-events: none;`,
+		`padding-right: 2.75rem;`,
 		`.action-button`,
 		`.history-button`,
 		`.dirty-dialog`,
+		`.composer-dock .composer-box`,
+		`background: var(--pico-color);`,
+		`.message-user[data-editing="true"]`,
+		`box-shadow: 0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 22%, transparent);`,
+		`.message-user .composer-box`,
+		`border: 0;`,
 		`.composer-status:empty`,
 		`animation: status-sweep 2.2s`,
 		`--status-sweep-low: rgb(32 32 32);`,
@@ -802,6 +819,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	for _, unwanted := range []string{
 		`@keyframes blink`,
 		`message-text:empty::after`,
+		`min-height: 1.75rem;`,
+		`.message-user .message-action`,
+		`.message-user .message-actions`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("app CSS = %q, did not expect removed streaming cursor style %q", body, unwanted)
@@ -847,6 +867,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`ArrowUp`,
 		`ArrowDown`,
 		`data-action-icon`,
+		`createMessageActions(role)`,
+		`role !== 'assistant'`,
+		`copy.title = 'Copy message'`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
@@ -1718,10 +1741,23 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 		`data-message-index="0"`,
 		`data-editable-prompt="true"`,
 		`aria-label="Copy message"`,
+		`title="Copy message"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want completed message affordance %q", body, want)
 		}
+	}
+	if count := strings.Count(body, `data-copy-message`); count != 1 {
+		t.Fatalf("GET / body contains %d copy buttons, want assistant-only copy button; body = %q", count, body)
+	}
+	userIndex := strings.Index(body, `message-user`)
+	assistantIndex := strings.Index(body, `message-assistant`)
+	copyIndex := strings.Index(body, `data-copy-message`)
+	if userIndex < 0 || assistantIndex <= userIndex || copyIndex < assistantIndex {
+		t.Fatalf("GET / body = %q, want copy button associated with assistant message only", body)
+	}
+	if strings.Contains(body[userIndex:assistantIndex], `data-copy-message`) {
+		t.Fatalf("GET / body = %q, did not expect copy button in user message", body)
 	}
 	for _, unwanted := range []string{
 		`class="message-header"`,

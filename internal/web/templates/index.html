@@ -27,7 +27,7 @@
             <span class="model-chip-label">Model</span>
             <span class="model-chip-value">{{.ModelLabel}}</span>
           </div>
-          <button id="theme-toggle" class="theme-toggle" type="button" data-theme-toggle aria-label="Current theme: system preference">
+          <button id="theme-toggle" class="theme-toggle" type="button" data-theme-toggle aria-label="Current theme: system preference" title="Switch theme">
             <svg data-theme-icon="light" aria-hidden="true" viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="4"></circle>
               <path d="M12 2v2"></path>
@@ -46,7 +46,7 @@
           {{if .Username}}
             <form class="logout-form" method="post" action="/logout">
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <button class="theme-toggle logout-button" type="submit" aria-label="Sign out">
+              <button class="theme-toggle logout-button" type="submit" aria-label="Sign out" title="Sign out">
                 <svg aria-hidden="true" viewBox="0 0 24 24">
                   <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                   <path d="m16 17 5-5-5-5"></path>
@@ -76,15 +76,17 @@
               {{else}}
                 <div class="message-text message-plain">{{.Text}}</div>
               {{end}}
-              <div class="message-actions" aria-label="Message actions">
-                <button class="message-action" type="button" data-copy-message aria-label="Copy message">
-                  <svg aria-hidden="true" viewBox="0 0 24 24">
-                    <path d="M8 7h10v13H8z"></path>
-                    <path d="M6 17H4V3h12v2"></path>
-                  </svg>
-                  <span class="sr-only">Copy message</span>
-                </button>
-              </div>
+              {{if eq .Role "assistant"}}
+                <div class="message-actions" aria-label="Message actions">
+                  <button class="message-action" type="button" data-copy-message aria-label="Copy message" title="Copy message">
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M8 7h10v13H8z"></path>
+                      <path d="M6 17H4V3h12v2"></path>
+                    </svg>
+                    <span class="sr-only">Copy message</span>
+                  </button>
+                </div>
+              {{end}}
             </article>
           {{else}}
             <article class="message message-empty">
@@ -93,7 +95,7 @@
           {{end}}
           <div id="messages-end" class="messages-end" aria-hidden="true"></div>
         </div>
-        <button id="scroll-bottom" class="scroll-bottom" type="button" aria-label="Scroll to latest message" hidden>
+        <button id="scroll-bottom" class="scroll-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message" hidden>
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <path d="m6 9 6 6 6-6"></path>
           </svg>
@@ -107,21 +109,21 @@
             <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
             <div class="composer-controls">
               <p id="composer-status" class="composer-status" aria-live="polite"></p>
-              <button id="undo-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt">
+              <button id="undo-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt" title="Previous prompt">
                 <svg aria-hidden="true" viewBox="0 0 24 24">
                   <path d="M9 7 4 12l5 5"></path>
                   <path d="M4 12h10a6 6 0 0 1 6 6"></path>
                 </svg>
                 <span class="sr-only">Previous prompt</span>
               </button>
-              <button id="redo-button" class="icon-button history-button" type="button" disabled aria-label="Next prompt">
+              <button id="redo-button" class="icon-button history-button" type="button" disabled aria-label="Next prompt" title="Next prompt">
                 <svg aria-hidden="true" viewBox="0 0 24 24">
                   <path d="m15 7 5 5-5 5"></path>
                   <path d="M20 12H10a6 6 0 0 0-6 6"></path>
                 </svg>
                 <span class="sr-only">Next prompt</span>
               </button>
-              <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message">
+              <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message" title="Send message">
                 <svg data-action-icon="send" aria-hidden="true" viewBox="0 0 24 24">
                   <path d="M12 19V5"></path>
                   <path d="m5 12 7-7 7 7"></path>

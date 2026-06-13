@@ -268,6 +268,7 @@ button {
 
 .message-assistant {
   align-self: stretch;
+  padding-right: 2.75rem;
 }
 
 .message-empty {
@@ -723,18 +724,20 @@ button {
 }
 
 .message-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
   display: flex;
-  justify-content: flex-end;
   gap: 0.25rem;
-  min-height: 1.75rem;
-  margin-top: 0.35rem;
-  opacity: 0.28;
+  opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms ease;
 }
 
-.message:hover .message-actions,
-.message:focus-within .message-actions {
+.message-assistant:hover .message-actions,
+.message-assistant:focus-within .message-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .message-action,
@@ -765,20 +768,6 @@ button {
 .message-action:focus-visible {
   background: var(--pico-muted-border-color);
   color: var(--pico-color);
-}
-
-.message-user .message-actions {
-  opacity: 0.58;
-}
-
-.message-user .message-action {
-  color: var(--pico-background-color);
-}
-
-.message-user .message-action:hover,
-.message-user .message-action:focus-visible {
-  background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
-  color: var(--pico-background-color);
 }
 
 .message-action svg,
@@ -851,11 +840,23 @@ button {
   will-change: transform;
 }
 
+.composer-dock .composer-box {
+  border-color: var(--pico-color);
+  background: var(--pico-color);
+  color: var(--pico-background-color);
+  box-shadow: none;
+}
+
 .composer-box:focus-within {
   border-color: var(--pico-primary);
   box-shadow:
     0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
     0 -0.35rem 1.5rem rgba(0, 0, 0, 0.04);
+}
+
+.composer-dock .composer-box:focus-within {
+  border-color: var(--pico-background-color);
+  box-shadow: 0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
 }
 
 .composer textarea {
@@ -873,6 +874,14 @@ button {
 
 .composer textarea:focus {
   box-shadow: none;
+}
+
+.composer-dock .composer textarea {
+  color: var(--pico-background-color);
+}
+
+.composer-dock .composer textarea::placeholder {
+  color: color-mix(in srgb, var(--pico-background-color) 65%, transparent);
 }
 
 .composer-controls {
@@ -929,7 +938,7 @@ button {
 }
 
 .message-user[data-editing="true"] {
-  padding: 0.35rem;
+  box-shadow: 0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 22%, transparent);
 }
 
 .message-user[data-editing="true"] > .message-text,
@@ -946,14 +955,15 @@ button {
 }
 
 .message-user .composer-box {
-  border-color: color-mix(in srgb, var(--pico-background-color) 35%, transparent);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
 .message-user .composer-box:focus-within {
-  border-color: var(--pico-background-color);
-  box-shadow: 0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 22%, transparent);
+  box-shadow: none;
 }
 
 .message-user .composer textarea {
@@ -965,20 +975,29 @@ button {
 }
 
 .message-user .composer-status,
+.composer-dock .composer-status,
 .message-user .history-button,
-.message-user .action-button {
+.composer-dock .history-button,
+.message-user .action-button,
+.composer-dock .action-button {
   color: color-mix(in srgb, var(--pico-background-color) 78%, transparent);
 }
 
 .message-user .history-button,
-.message-user .action-button {
+.composer-dock .history-button,
+.message-user .action-button,
+.composer-dock .action-button {
   border-color: color-mix(in srgb, var(--pico-background-color) 30%, transparent);
 }
 
 .message-user .history-button:hover,
 .message-user .history-button:focus-visible,
+.composer-dock .history-button:hover,
+.composer-dock .history-button:focus-visible,
 .message-user .action-button:hover,
-.message-user .action-button:focus-visible {
+.composer-dock .action-button:hover,
+.message-user .action-button:focus-visible,
+.composer-dock .action-button:focus-visible {
   background: color-mix(in srgb, var(--pico-background-color) 18%, transparent);
   color: var(--pico-background-color);
 }

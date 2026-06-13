@@ -334,7 +334,10 @@
     animateComposerFrom(firstRect);
   }
 
-  function createMessageActions() {
+  function createMessageActions(role) {
+    if (role !== 'assistant') {
+      return null;
+    }
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     actions.setAttribute('aria-label', 'Message actions');
@@ -344,6 +347,7 @@
     copy.type = 'button';
     copy.dataset.copyMessage = '';
     copy.setAttribute('aria-label', 'Copy message');
+    copy.title = 'Copy message';
     copy.innerHTML = `${copyIcon}<span class="sr-only">Copy message</span>`;
 
     actions.append(copy);
@@ -489,7 +493,11 @@
     if (role === 'assistant' && options && options.streaming) {
       article.append(createThinkingStatus());
     }
-    article.append(messageText, createMessageActions());
+    article.append(messageText);
+    const actions = createMessageActions(role);
+    if (actions) {
+      article.append(actions);
+    }
     insertMessage(article);
     scrollToBottom(true, true);
     return { article, text: messageText };
