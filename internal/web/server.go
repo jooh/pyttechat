@@ -28,9 +28,8 @@ import (
 )
 
 const (
-	sessionCookieName        = "pyttechat_session"
-	csrfHeaderName           = "X-CSRF-Token"
-	resumeContinuationPrompt = "Continue the previous assistant response from where it stopped. Do not restart or mention the interruption."
+	sessionCookieName = "pyttechat_session"
+	csrfHeaderName    = "X-CSRF-Token"
 )
 
 //go:embed assets/* assets/vendor/* assets/vendor/katex/* assets/vendor/katex/fonts/* templates/*
@@ -236,8 +235,6 @@ func (s *Server) handleTurnRoute(w http.ResponseWriter, r *http.Request) {
 		s.handleTurnEvents(w, r, turnID)
 	case action == "abort" && r.Method == http.MethodPost:
 		s.handleAbortTurn(w, r, turnID)
-	case action == "resume" && r.Method == http.MethodPost:
-		s.handleResumeTurn(w, r, turnID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -342,72 +339,6 @@ func (s *Server) handleAbortTurn(w http.ResponseWriter, r *http.Request, turnID 
 	observability.SetSpanStatus(span, observability.ChatTurnStatusCancelled)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"aborted": turnID,
-	})
-}
-
-func (s *Server) handleResumeTurn(w http.ResponseWriter, r *http.Request, turnID string) {
-	requestCtx := r.Context()
-	_, span := observability.StartSpan(requestCtx, "chat.turn.resume.request", observability.ComponentWeb)
-	defer span.End()
-
-	session, err := s.session(w, r)
-	if err != nil {
-		if errors.Is(err, auth.ErrInvalidSession) {
-			writeJSONError(w, http.StatusUnauthorized, "authentication_required", "authentication required")
-			return
-		}
-		writeJSONError(w, http.StatusInternalServerError, "session_error", "could not create session")
-		return
-	}
-	if !validCSRF(r, session.csrf) {
-		writeJSONError(w, http.StatusForbidden, "invalid_csrf", "invalid CSRF token")
-		return
-	}
-
-	original := session.turn(turnID)
-	if original == nil {
-		writeJSONError(w, http.StatusNotFound, "turn_not_found", "turn not found")
-		return
-	}
-	if !original.canResume() {
-		writeJSONError(w, http.StatusConflict, "turn_not_resumable", "turn cannot be resumed")
-		return
-	}
-
-	messages := session.chat.Messages()
-	if len(messages) == 0 || messages[len(messages)-1].Role != llm.RoleAssistant {
-		writeJSONError(w, http.StatusConflict, "turn_not_resumable", "turn cannot be resumed")
-		return
-	}
-	turn, err := newResumeTurnJobWithContext(context.WithoutCancel(r.Context()), resumeContinuationPrompt, original.assistantMessageID, messages[len(messages)-1])
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "turn_error", "could not create turn")
-		return
-	}
-
-	session.mu.Lock()
-	for _, existing := range session.turns {
-		if !existing.isTerminal() {
-			session.mu.Unlock()
-			writeJSONError(w, http.StatusConflict, "turn_in_progress", "turn already in progress")
-			return
-		}
-	}
-	session.turns[turn.id] = turn
-	session.mu.Unlock()
-
-	go turn.runResume(session.chat, chat.ResumeOptions{ //nolint:contextcheck // turn jobs use their own cancelable context and outlive the request.
-		Model:                 s.model,
-		ReasoningEffort:       s.reasoningEffort,
-		RenderingInstructions: chat.WebRenderingInstructions(),
-		TelemetryComponent:    observability.ComponentWeb,
-		ContinuationPrompt:    resumeContinuationPrompt,
-	})
-
-	writeJSON(w, http.StatusCreated, resumeTurnResponse{
-		TurnID:             turn.id,
-		AssistantMessageID: turn.assistantMessageID,
-		StreamURL:          "/chat/turns/" + turn.id + "/events",
 	})
 }
 
@@ -774,12 +705,6 @@ type createTurnResponse struct {
 	StreamURL          string `json:"stream_url"`
 }
 
-type resumeTurnResponse struct {
-	TurnID             string `json:"turn_id"`
-	AssistantMessageID string `json:"assistant_message_id"`
-	StreamURL          string `json:"stream_url"`
-}
-
 type pageData struct {
 	CSRFToken        string
 	ModelLabel       string
@@ -1111,7 +1036,6 @@ type turnJob struct {
 	userMessageID      string
 	assistantMessageID string
 	prompt             string
-	resumeBaseParts    []llm.Part
 	ctx                context.Context
 	cancel             context.CancelFunc
 
@@ -1120,7 +1044,6 @@ type turnJob struct {
 	nextEventID    int64
 	subscribers    map[chan streamEvent]struct{}
 	terminal       bool
-	terminalName   string
 	abortRequested bool
 	done           chan struct{}
 	doneClosed     bool
@@ -1152,27 +1075,6 @@ func newTurnJobWithContext(ctx context.Context, prompt string) (*turnJob, error)
 		userMessageID:      userMessageID,
 		assistantMessageID: assistantMessageID,
 		prompt:             prompt,
-		ctx:                ctx,
-		cancel:             cancel,
-		subscribers:        map[chan streamEvent]struct{}{},
-		done:               make(chan struct{}),
-	}, nil
-}
-
-func newResumeTurnJobWithContext(ctx context.Context, prompt, assistantMessageID string, baseAssistant llm.Message) (*turnJob, error) { //nolint:contextcheck // turn jobs store a cancelable context because they outlive the create request.
-	turnID, err := randomID("turn")
-	if err != nil {
-		return nil, err
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	return &turnJob{
-		id:                 turnID,
-		assistantMessageID: assistantMessageID,
-		prompt:             prompt,
-		resumeBaseParts:    cloneParts(baseAssistant.Parts),
 		ctx:                ctx,
 		cancel:             cancel,
 		subscribers:        map[chan streamEvent]struct{}{},
@@ -1265,105 +1167,8 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 	}
 }
 
-func (j *turnJob) runResume(session *chat.Session, opts chat.ResumeOptions) {
-	defer j.finish()
-
-	stream, err := session.ResumeLastAssistant(j.ctx, opts)
-	if err != nil {
-		j.emitError(err)
-		return
-	}
-	defer stream.Close()
-
-	renderer := markdown.NewRenderer()
-	var assistantParts []llm.Part
-	completed := false
-	for {
-		event, err := stream.Next()
-		if errors.Is(err, io.EOF) {
-			if !completed {
-				if j.wasAbortRequested() {
-					j.emitResumeAbortedAfterCommit(stream)
-					return
-				}
-				j.emitError(io.ErrUnexpectedEOF)
-			}
-			return
-		}
-		if err != nil {
-			if j.shouldAbort(err) {
-				j.emitResumeAbortedAfterCommit(stream)
-				return
-			}
-			j.emitError(err)
-			return
-		}
-
-		switch event.Type {
-		case llm.EventTextDelta:
-			if event.Delta == "" {
-				continue
-			}
-			appendOutputDelta(&assistantParts, llm.PartText, event.Delta)
-			html, err := renderAssistantBody(mergeAssistantOutputParts(j.resumeBaseParts, assistantParts), renderer)
-			if err != nil {
-				log.Printf("markdown resume preview render failed for turn %s: %v", j.id, err)
-				html = escapedPlainTextHTML(assistantText(mergeAssistantOutputParts(j.resumeBaseParts, assistantParts)))
-			}
-			j.emit("preview", htmlEvent{
-				TurnID:             j.id,
-				AssistantMessageID: j.assistantMessageID,
-				HTML:               html,
-			})
-		case llm.EventReasoningDelta:
-			appendOutputDelta(&assistantParts, llm.PartReasoning, event.Delta)
-			j.emit("reasoning", deltaEvent{
-				TurnID:             j.id,
-				AssistantMessageID: j.assistantMessageID,
-				Delta:              event.Delta,
-			})
-		case llm.EventOutputItemDone:
-			mergeCompletedOutputPart(&assistantParts, event.Part)
-		case llm.EventCompleted:
-			completed = true
-			parts := mergeAssistantOutputParts(j.resumeBaseParts, assistantParts)
-			html, err := renderAssistantBody(parts, renderer)
-			if err != nil {
-				log.Printf("markdown resume final render failed for turn %s: %v", j.id, err)
-				html = escapedPlainTextHTML(assistantText(parts))
-			}
-			j.emitTerminal("done", doneEvent{
-				TurnID:             j.id,
-				AssistantMessageID: j.assistantMessageID,
-				ResponseID:         event.ResponseID,
-				Usage:              event.Usage,
-				HTML:               html,
-				Statuses:           assistantStatuses(parts, -1),
-				CompletedAt:        timeNow().UTC().Format(time.RFC3339),
-			})
-			return
-		case llm.EventError:
-			if event.Err != nil {
-				j.emitError(event.Err)
-				return
-			}
-		}
-	}
-}
-
 func (j *turnJob) shouldAbort(err error) bool {
 	return j.wasAbortRequested() || errors.Is(err, context.Canceled)
-}
-
-func cloneParts(parts []llm.Part) []llm.Part {
-	if parts == nil {
-		return nil
-	}
-	out := make([]llm.Part, len(parts))
-	for i, part := range parts {
-		out[i] = part.Clone()
-	}
-	return out
 }
 
 func appendOutputDelta(parts *[]llm.Part, partType llm.PartType, delta string) {
@@ -1412,45 +1217,6 @@ func mergeCompletedOutputPart(parts *[]llm.Part, part llm.Part) {
 	*parts = append(*parts, part.Clone())
 }
 
-func mergeAssistantOutputParts(base, continuation []llm.Part) []llm.Part {
-	parts := cloneParts(base)
-	for _, part := range continuation {
-		if part.Type == "" {
-			continue
-		}
-		lastIndex := len(parts) - 1
-		if lastIndex >= 0 && canMergeAssistantOutputParts(parts[lastIndex], part) {
-			parts[lastIndex].Text += part.Text
-			if len(part.Summary) > 0 {
-				parts[lastIndex].Summary = append(parts[lastIndex].Summary, part.Summary...)
-			}
-			if part.ID != "" {
-				parts[lastIndex].ID = part.ID
-			}
-			if part.EncryptedContent != "" {
-				parts[lastIndex].EncryptedContent = part.EncryptedContent
-			}
-			continue
-		}
-		parts = append(parts, part.Clone())
-	}
-	return parts
-}
-
-func canMergeAssistantOutputParts(left, right llm.Part) bool {
-	return (left.Type == llm.PartText || left.Type == llm.PartReasoning) && left.Type == right.Type
-}
-
-func assistantText(parts []llm.Part) string {
-	var text strings.Builder
-	for _, part := range parts {
-		if part.Type == llm.PartText {
-			text.WriteString(part.Text)
-		}
-	}
-	return text.String()
-}
-
 func escapedPlainTextHTML(text string) template.HTML {
 	escaped := template.HTMLEscapeString(text)
 	escaped = strings.ReplaceAll(escaped, "\r\n", "\n")
@@ -1476,18 +1242,6 @@ func (j *turnJob) emitAbortedAfterCommit(session *chat.Session, stream *chat.Tur
 		err = session.CommitStopped(context.Background(), j.prompt, opts)
 	}
 	if err != nil {
-		j.emitStreamError()
-		return
-	}
-	j.emitAborted()
-}
-
-func (j *turnJob) emitResumeAbortedAfterCommit(stream *chat.TurnStream) {
-	if stream == nil {
-		j.emitAborted()
-		return
-	}
-	if err := stream.CommitPartial(); err != nil {
 		j.emitStreamError()
 		return
 	}
@@ -1544,7 +1298,6 @@ func (j *turnJob) emitTerminal(name string, payload any) {
 	event := streamEvent{ID: j.nextEventID, Name: name, Data: data}
 	j.events = append(j.events, event)
 	j.terminal = true
-	j.terminalName = name
 	for subscriber := range j.subscribers {
 		select {
 		case subscriber <- event:
@@ -1637,12 +1390,6 @@ func (j *turnJob) wasAbortRequested() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.abortRequested
-}
-
-func (j *turnJob) canResume() bool {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.terminal && j.terminalName == "aborted" && j.abortRequested
 }
 
 type deltaEvent struct {

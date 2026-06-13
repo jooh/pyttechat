@@ -458,57 +458,6 @@ WHERE conversation_id = ? AND sequence > ?
 	return tx.Commit()
 }
 
-func (s *SQLite) ReplaceLastAssistant(ctx context.Context, conversationID int64, assistantMessage llm.Message) error {
-	if conversationID <= 0 || assistantMessage.Role != llm.RoleAssistant {
-		return ErrInvalidArgument
-	}
-	assistantParts, err := json.Marshal(assistantMessage.Parts)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-
-	var sequence int
-	var role llm.Role
-	err = tx.QueryRowContext(ctx, `
-SELECT sequence, role
-FROM messages
-WHERE conversation_id = ?
-ORDER BY sequence DESC
-LIMIT 1
-`, conversationID).Scan(&sequence, &role)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidArgument
-	}
-	if err != nil {
-		return err
-	}
-	if role != llm.RoleAssistant {
-		return ErrInvalidArgument
-	}
-
-	result, err := tx.ExecContext(ctx, `
-UPDATE messages
-SET parts_json = ?
-WHERE conversation_id = ? AND sequence = ?
-`, string(assistantParts), conversationID, sequence)
-	if err != nil {
-		return err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected != 1 {
-		return ErrInvalidArgument
-	}
-	return tx.Commit()
-}
-
 func insertTurnAtSequence(ctx context.Context, tx *sql.Tx, conversationID int64, firstSequence int, userMessage, assistantMessage llm.Message) error {
 	userParts, err := json.Marshal(userMessage.Parts)
 	if err != nil {

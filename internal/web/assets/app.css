@@ -987,9 +987,8 @@ button {
   color: var(--icon-button-hover-color);
 }
 
-.action-button[data-action-state="pause"],
-.action-button[data-action-state="pausing"],
-.action-button[data-action-state="resume"] {
+.action-button[data-action-state="stop"],
+.action-button[data-action-state="stopping"] {
   color: var(--icon-button-color);
 }
 

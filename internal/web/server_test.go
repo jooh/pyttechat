@@ -98,7 +98,7 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`title="Send message"`,
 		`data-action-state="send"`,
 		`data-action-icon="play"`,
-		`data-action-icon="pause"`,
+		`data-action-icon="stop"`,
 		`id="composer-end-target"`,
 		`data-composer-end-target`,
 		`id="dirty-dialog"`,
@@ -885,7 +885,6 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`data.endActive = 'true'`,
 		`ffwdButton`,
 		`requestNavigation(null, 'end')`,
-		`resumeTurn`,
 		`handleEditablePromptClick`,
 		`requestNavigation(index, 'end')`,
 		`handleHistoryShortcut`,
@@ -896,8 +895,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`ArrowUp`,
 		`ArrowDown`,
 		`data-action-icon`,
-		`Resume response`,
-		`Pause response`,
+		`toggleAttribute('hidden'`,
+		`Stop response`,
+		`Stopping response`,
 		`createMessageActions(role)`,
 		`role !== 'assistant'`,
 		`copy.title = 'Copy message'`,
@@ -913,6 +913,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`Generating response`,
 		`Response complete`,
 		`Response stopped`,
+		`Resume response`,
+		`resumeTurn`,
+		`/resume`,
 		`article.append(createThinkingStatus());`,
 	} {
 		if strings.Contains(body, unwanted) {
@@ -1504,200 +1507,16 @@ func TestAbortedTurnPersistsPartialOutputForFollowUp(t *testing.T) {
 	}
 }
 
-func TestResumeAbortedTurnContinuesPartialIntoExistingAssistant(t *testing.T) {
-	llmClient := newControlledClient()
-	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+func TestResumeRouteIsNotSupported(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
 	defer server.Close()
 
 	client := testHTTPClient(t)
-	csrfToken := fetchCSRFToken(t, client, server.URL)
-	turn := createTurn(t, client, server.URL, csrfToken, "hello")
-	_ = llmClient.waitForContext(t)
-
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
-	if err != nil {
-		t.Fatalf("NewRequest events error = %v", err)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("GET events error = %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(response.Body)
-		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
-	}
-
-	select {
-	case llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial"}:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out sending partial event")
-	}
-	reader := bufio.NewReader(response.Body)
-	preview := decodePreviewFrame(t, readSSEFrame(t, reader))
-	if preview.AssistantMessageID != turn.AssistantMessageID || !strings.Contains(preview.HTML, "partial") {
-		t.Fatalf("preview payload = %#v, want partial output on original assistant message", preview)
-	}
-
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	abortResponse, abortBody := do(t, client, request)
-	defer abortResponse.Body.Close()
-	if abortResponse.StatusCode != http.StatusOK {
-		t.Fatalf("abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
-	}
-	if !hasFrame(parseSSE(t, mustReadAllString(t, reader)), "aborted", `"turn_id":"`+turn.TurnID+`"`) {
-		t.Fatalf("aborted turn did not stream terminal event")
-	}
-
-	resume := resumeTurn(t, client, server.URL, csrfToken, turn.TurnID)
-	if resume.TurnID == turn.TurnID || resume.AssistantMessageID != turn.AssistantMessageID {
-		t.Fatalf("resume response = %#v, want new turn ID and original assistant message ID %q", resume, turn.AssistantMessageID)
-	}
-	_ = llmClient.waitForContext(t)
-
-	request, err = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+resume.StreamURL, nil)
-	if err != nil {
-		t.Fatalf("NewRequest resume events error = %v", err)
-	}
-	resumeResponse, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("GET resume events error = %v", err)
-	}
-	defer resumeResponse.Body.Close()
-	if resumeResponse.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resumeResponse.Body)
-		t.Fatalf("GET resume events status = %d, want 200; body = %q", resumeResponse.StatusCode, raw)
-	}
-
-	select {
-	case llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: " continued"}:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out sending resumed event")
-	}
-	select {
-	case llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_resume"}:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out sending resumed completion")
-	}
-
-	resumeReader := bufio.NewReader(resumeResponse.Body)
-	resumePreview := decodePreviewFrame(t, readSSEFrame(t, resumeReader))
-	if resumePreview.TurnID != resume.TurnID || resumePreview.AssistantMessageID != turn.AssistantMessageID || !strings.Contains(resumePreview.HTML, "partial continued") {
-		t.Fatalf("resume preview = %#v, want merged output on original assistant message", resumePreview)
-	}
-	done := decodeDoneFrame(t, readSSEFrame(t, resumeReader))
-	if done.TurnID != resume.TurnID || done.AssistantMessageID != turn.AssistantMessageID || !strings.Contains(done.HTML, "partial continued") {
-		t.Fatalf("resume done = %#v, want merged output on original assistant message", done)
-	}
-
-	requests := llmClient.Requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want original plus resume", len(requests))
-	}
-	got := requests[1].Messages
-	if len(got) != 3 || got[0].Text() != "hello" || got[1].Text() != "partial" || got[2].Role != llm.RoleUser || !strings.Contains(got[2].Text(), "Continue the previous assistant response") {
-		t.Fatalf("resume request messages = %#v, want original prompt, partial assistant, hidden continuation prompt", got)
-	}
-}
-
-func TestResumeRequiresCSRFAbortedTurnAndIdleSession(t *testing.T) {
-	llmClient := newControlledClient()
-	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
-	defer server.Close()
-
-	client := testHTTPClient(t)
-	csrfToken := fetchCSRFToken(t, client, server.URL)
-	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/missing/resume", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/turn_missing/resume", nil)
 	response, body := do(t, client, request)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("resume missing turn status = %d, want 404; body = %q", response.StatusCode, body)
-	}
-
-	completed := createTurn(t, client, server.URL, csrfToken, "done")
-	_ = llmClient.waitForContext(t)
-	select {
-	case llmClient.events <- llm.Event{Type: llm.EventCompleted, ResponseID: "resp_done"}:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out sending completion")
-	}
-	response, body = get(t, client, server.URL+completed.StreamURL)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK || !hasFrame(parseSSE(t, body), "done", `"turn_id":"`+completed.TurnID+`"`) {
-		t.Fatalf("completed events status = %d body = %q, want done event", response.StatusCode, body)
-	}
-
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+completed.TurnID+"/resume", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body = do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("resume completed status = %d, want 409; body = %q", response.StatusCode, body)
-	}
-
-	aborted := createTurn(t, client, server.URL, csrfToken, "stop me")
-	_ = llmClient.waitForContext(t)
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+aborted.TurnID+"/abort", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body = do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("abort status = %d, want 200; body = %q", response.StatusCode, body)
-	}
-
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+aborted.TurnID+"/resume", nil)
-	response, body = do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("resume without csrf status = %d, want 403; body = %q", response.StatusCode, body)
-	}
-
-	busy := createTurn(t, client, server.URL, csrfToken, "busy")
-	_ = llmClient.waitForContext(t)
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+aborted.TurnID+"/resume", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body = do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("resume while busy status = %d, want 409; body = %q", response.StatusCode, body)
-	}
-
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+busy.TurnID+"/abort", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	cleanupResponse, cleanupBody := do(t, client, request)
-	defer cleanupResponse.Body.Close()
-	if cleanupResponse.StatusCode != http.StatusOK {
-		t.Fatalf("cleanup abort status = %d, want 200; body = %q", cleanupResponse.StatusCode, cleanupBody)
-	}
-}
-
-func TestResumeAbortedTurnReportsJobCreationFailure(t *testing.T) {
-	llmClient := newControlledClient()
-	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
-	defer server.Close()
-
-	client := testHTTPClient(t)
-	csrfToken := fetchCSRFToken(t, client, server.URL)
-	turn := createTurn(t, client, server.URL, csrfToken, "hello")
-	_ = llmClient.waitForContext(t)
-
-	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body := do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("abort status = %d, want 200; body = %q", response.StatusCode, body)
-	}
-
-	withRandomReader(t, &sequenceRandomReader{failAt: 1})
-	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/resume", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body = do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("resume random failure status = %d, want 500; body = %q", response.StatusCode, body)
+		t.Fatalf("POST resume status = %d, want 404; body = %q", response.StatusCode, body)
 	}
 }
 
@@ -2593,25 +2412,6 @@ func TestRenderingHelpersCoverBranchVariants(t *testing.T) {
 	if escaped != "&lt;a&gt;<br>\nb<br>\nc" {
 		t.Fatalf("escapedPlainTextHTML = %q, want escaped line breaks", escaped)
 	}
-	merged := mergeAssistantOutputParts([]llm.Part{
-		{Type: llm.PartText, Text: "partial"},
-		{Type: llm.PartReasoning, Text: "rough"},
-	}, []llm.Part{
-		{},
-		{Type: llm.PartReasoning, Text: " final", Summary: []string{"summary"}},
-		{Type: llm.PartText, Text: " answer"},
-		{Type: llm.PartText, Text: " continued"},
-		{Type: llm.PartError, Text: "warning"},
-	})
-	if len(merged) != 4 || merged[1].Text != "rough final" || merged[2].Text != " answer continued" || merged[3].Type != llm.PartError {
-		t.Fatalf("mergeAssistantOutputParts = %#v, want merged reasoning/text plus error", merged)
-	}
-	if got := assistantText(merged); got != "partial answer continued" {
-		t.Fatalf("assistantText = %q, want text-only concatenation", got)
-	}
-	if got := mergeAssistantOutputParts(nil, nil); got != nil {
-		t.Fatalf("mergeAssistantOutputParts(nil, nil) = %#v, want nil", got)
-	}
 	html, err := renderAssistantBody([]llm.Part{{Type: llm.PartText, Text: "   "}}, NewServer(Options{Client: dummy.NewClient()}).markdown)
 	if err != nil || html != "" {
 		t.Fatalf("renderAssistantBody whitespace = %q, %v; want empty nil", html, err)
@@ -2744,190 +2544,6 @@ func TestTurnJobEmitErrorMapsCancellationToAborted(t *testing.T) {
 	}
 }
 
-func TestResumeTurnJobStreamsMergedPreviewsAndDone(t *testing.T) {
-	session := chat.NewService(dummy.NewClient(
-		dummy.Turn{TextChunks: []string{"partial"}},
-		dummy.Turn{ReasoningChunks: []string{"thinking"}, TextChunks: []string{" continued"}},
-	)).NewSession()
-	first, err := session.Send(context.Background(), "hello", chat.SendOptions{})
-	if err != nil {
-		t.Fatalf("Send() error = %v, want nil", err)
-	}
-	drainChatTurnStream(t, first)
-
-	messages := session.Messages()
-	turn, err := newResumeTurnJobWithContext(nil, resumeContinuationPrompt, "msg_existing", messages[1])
-	if err != nil {
-		t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-	}
-	turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-
-	replay, _, terminal := turn.subscribe(0)
-	if !terminal {
-		t.Fatalf("resume turn is not terminal")
-	}
-	assertReplayEvents(t, replay, []string{"reasoning", "preview", "done"})
-	if !strings.Contains(string(replay[1].Data), "partial") || !strings.Contains(string(replay[1].Data), "continued") ||
-		!strings.Contains(string(replay[2].Data), "partial") || !strings.Contains(string(replay[2].Data), "continued") {
-		t.Fatalf("resume replay = %#v, want partial and continuation in preview and done", replay)
-	}
-	if !strings.Contains(string(replay[0].Data), "thinking") {
-		t.Fatalf("resume reasoning replay = %#v, want reasoning delta", replay[0])
-	}
-}
-
-func TestResumeTurnJobStreamErrorBranches(t *testing.T) {
-	t.Run("invalid history", func(t *testing.T) {
-		turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.Message{Role: llm.RoleAssistant})
-		if err != nil {
-			t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-		}
-		session := chat.NewService(dummy.NewClient()).NewSession()
-		turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || !hasReplayEvent(replay, "stream-error") {
-			t.Fatalf("replay = %#v terminal=%v, want stream-error", replay, terminal)
-		}
-	})
-
-	t.Run("unexpected eof", func(t *testing.T) {
-		turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.NewTextMessage(llm.RoleAssistant, "partial"))
-		if err != nil {
-			t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-		}
-		session := chat.NewService(webSequenceClient{}).NewSession()
-		if err := session.CommitStopped(context.Background(), "hello", chat.SendOptions{}); err != nil {
-			t.Fatalf("CommitStopped error = %v, want nil", err)
-		}
-		turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || !hasReplayEvent(replay, "stream-error") {
-			t.Fatalf("replay = %#v terminal=%v, want stream-error", replay, terminal)
-		}
-	})
-
-	t.Run("nil event error falls through", func(t *testing.T) {
-		turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.NewTextMessage(llm.RoleAssistant, "partial"))
-		if err != nil {
-			t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-		}
-		session := chat.NewService(webSequenceClient{events: []llm.Event{
-			{Type: llm.EventError},
-			{Type: llm.EventCompleted, ResponseID: "resp_done"},
-		}}).NewSession()
-		if err := session.CommitStopped(context.Background(), "hello", chat.SendOptions{}); err != nil {
-			t.Fatalf("CommitStopped error = %v, want nil", err)
-		}
-		turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || !hasReplayEvent(replay, "done") {
-			t.Fatalf("replay = %#v terminal=%v, want done", replay, terminal)
-		}
-	})
-
-	t.Run("event error with cause", func(t *testing.T) {
-		turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.NewTextMessage(llm.RoleAssistant, "partial"))
-		if err != nil {
-			t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-		}
-		session := chat.NewService(webSequenceClient{events: []llm.Event{
-			{Type: llm.EventError, Err: errors.New("event failed")},
-		}}).NewSession()
-		if err := session.CommitStopped(context.Background(), "hello", chat.SendOptions{}); err != nil {
-			t.Fatalf("CommitStopped error = %v, want nil", err)
-		}
-		turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-		replay, _, terminal := turn.subscribe(0)
-		if !terminal || !hasReplayEvent(replay, "stream-error") {
-			t.Fatalf("replay = %#v terminal=%v, want stream-error", replay, terminal)
-		}
-	})
-}
-
-func TestResumeTurnJobCommitsPartialOnAbort(t *testing.T) {
-	turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.NewTextMessage(llm.RoleAssistant, "partial"))
-	if err != nil {
-		t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-	}
-	session := chat.NewService(webSequenceClient{events: []llm.Event{
-		{Type: llm.EventTextDelta, Delta: " continued"},
-	}}).NewSession()
-	if err := session.CommitStopped(context.Background(), "hello", chat.SendOptions{}); err != nil {
-		t.Fatalf("CommitStopped error = %v, want nil", err)
-	}
-	stream, err := session.ResumeLastAssistant(context.Background(), chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-	if err != nil {
-		t.Fatalf("ResumeLastAssistant error = %v, want nil", err)
-	}
-	if event, nextErr := stream.Next(); nextErr != nil || event.Type != llm.EventTextDelta {
-		t.Fatalf("resume Next() = %#v, %v; want text delta", event, nextErr)
-	}
-
-	turn.emitResumeAbortedAfterCommit(stream)
-	replay, _, terminal := turn.subscribe(0)
-	if !terminal || !hasReplayEvent(replay, "aborted") {
-		t.Fatalf("replay = %#v terminal=%v, want aborted", replay, terminal)
-	}
-	if got := session.Messages()[1].Text(); got != " continued" {
-		t.Fatalf("assistant text after partial resume commit = %q, want committed continuation", got)
-	}
-
-	turn, err = newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.Message{Role: llm.RoleAssistant})
-	if err != nil {
-		t.Fatalf("newResumeTurnJobWithContext second error = %v, want nil", err)
-	}
-	turn.emitResumeAbortedAfterCommit(nil)
-	replay, _, terminal = turn.subscribe(0)
-	if !terminal || !hasReplayEvent(replay, "aborted") {
-		t.Fatalf("nil stream replay = %#v terminal=%v, want aborted", replay, terminal)
-	}
-}
-
-func TestResumeTurnJobAbortCancelsRunningResumeStream(t *testing.T) {
-	llmClient := newAbortBlockingClient()
-	defer llmClient.releaseCanceledStream()
-	session := chat.NewService(llmClient).NewSession()
-	if err := session.CommitStopped(context.Background(), "hello", chat.SendOptions{}); err != nil {
-		t.Fatalf("CommitStopped error = %v, want nil", err)
-	}
-	turn, err := newResumeTurnJobWithContext(context.Background(), resumeContinuationPrompt, "msg_existing", llm.NewTextMessage(llm.RoleAssistant, "partial"))
-	if err != nil {
-		t.Fatalf("newResumeTurnJobWithContext error = %v, want nil", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		turn.runResume(session, chat.ResumeOptions{ContinuationPrompt: resumeContinuationPrompt})
-		close(done)
-	}()
-	llmClient.waitForStreamStart(t)
-	abortResult := make(chan bool, 1)
-	go func() {
-		abortResult <- turn.abort(context.Background())
-	}()
-	llmClient.waitForCancel(t)
-	llmClient.releaseCanceledStream()
-
-	select {
-	case aborted := <-abortResult:
-		if !aborted {
-			t.Fatalf("abort returned false, want true")
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("abort did not return")
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatalf("resume turn did not finish")
-	}
-
-	replay, _, terminal := turn.subscribe(0)
-	if !terminal || !hasReplayEvent(replay, "aborted") {
-		t.Fatalf("replay = %#v terminal=%v, want aborted", replay, terminal)
-	}
-}
-
 func TestTurnJobIgnoresEmptyTextDeltas(t *testing.T) {
 	turn := newTestTurnJob(t)
 	session := chat.NewService(webSequenceClient{events: []llm.Event{
@@ -3008,12 +2624,6 @@ func TestTurnJobTerminalEmitNoOpsAndAbortContextDone(t *testing.T) {
 type turnResponse struct {
 	TurnID             string `json:"turn_id"`
 	UserMessageID      string `json:"user_message_id"`
-	AssistantMessageID string `json:"assistant_message_id"`
-	StreamURL          string `json:"stream_url"`
-}
-
-type testResumeTurnPayload struct {
-	TurnID             string `json:"turn_id"`
 	AssistantMessageID string `json:"assistant_message_id"`
 	StreamURL          string `json:"stream_url"`
 }
@@ -3216,27 +2826,6 @@ func createTurnWithPayload(t *testing.T, client *http.Client, baseURL, csrfToken
 	}
 	if turn.TurnID == "" || turn.UserMessageID == "" || turn.AssistantMessageID == "" || turn.StreamURL == "" {
 		t.Fatalf("turn response = %#v, want stable ids and stream URL", turn)
-	}
-	return turn
-}
-
-func resumeTurn(t *testing.T, client *http.Client, baseURL, csrfToken, turnID string) testResumeTurnPayload {
-	t.Helper()
-
-	request := newJSONRequest(t, http.MethodPost, baseURL+"/chat/turns/"+turnID+"/resume", nil)
-	request.Header.Set(csrfHeaderName, csrfToken)
-	response, body := do(t, client, request)
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("POST resume status = %d, want 201; body = %q", response.StatusCode, body)
-	}
-
-	var turn testResumeTurnPayload
-	if err := json.Unmarshal([]byte(body), &turn); err != nil {
-		t.Fatalf("decode resume response error = %v; body = %q", err, body)
-	}
-	if turn.TurnID == "" || turn.AssistantMessageID == "" || turn.StreamURL == "" {
-		t.Fatalf("resume response = %#v, want turn ID, assistant message ID, and stream URL", turn)
 	}
 	return turn
 }

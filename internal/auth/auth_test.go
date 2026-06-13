@@ -384,10 +384,6 @@ func (s authTestStore) ReplaceTailAndAppendTurn(context.Context, int64, int, llm
 	return nil
 }
 
-func (s authTestStore) ReplaceLastAssistant(context.Context, int64, llm.Message) error {
-	return nil
-}
-
 func (s authTestStore) Close() error {
 	return nil
 }
