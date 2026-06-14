@@ -88,10 +88,8 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`id="composer-status"`,
 		`<p id="composer-status" class="composer-status" aria-live="polite"></p>`,
 		`id="composer-dock"`,
-		`id="undo-button"`,
-		`title="Undo prompt edit"`,
-		`id="redo-button"`,
-		`title="Redo prompt edit"`,
+		`id="revert-button"`,
+		`title="Revert prompt changes"`,
 		`id="previous-button"`,
 		`title="Previous prompt"`,
 		`id="next-button"`,
@@ -107,8 +105,7 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`class="message message-user message-end-target"`,
 		`data-composer-end-target`,
 		`data-end-prompt="true"`,
-		`aria-label="Undo prompt edit"`,
-		`aria-label="Redo prompt edit"`,
+		`aria-label="Revert prompt changes"`,
 		`aria-label="Previous prompt"`,
 		`aria-label="Next prompt"`,
 		`aria-label="Latest prompt"`,
@@ -124,6 +121,16 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want rendered shell substring %q", body, want)
+		}
+	}
+	for _, unwanted := range []string{
+		`id="undo-button"`,
+		`id="redo-button"`,
+		`Undo prompt edit`,
+		`Redo prompt edit`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("GET / body = %q, did not expect removed prompt history control %q", body, unwanted)
 		}
 	}
 
@@ -820,13 +827,14 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`padding: 1.25rem 0.75rem 1.5rem;`,
 		`padding: 0 0.75rem 1rem;`,
 		`0 0 18px`,
+		`0 0 0 var(--pico-outline-width) var(--pico-primary-focus)`,
 		`0 8px 24px`,
 		`0 2px 8px`,
 		`.message-user[data-editing="true"]`,
 		`.message-user[data-active-prompt="true"]`,
 		`position: sticky;`,
-		`top: 0.25rem;`,
-		`bottom: 0.25rem;`,
+		`top: 0.125rem;`,
+		`bottom: 0.125rem;`,
 		`.message[data-after-active-prompt="true"]`,
 		`.messages[data-dirty-prompt="true"] .message[data-after-active-prompt="true"]`,
 		`opacity: 0.56;`,
@@ -899,6 +907,7 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`data.afterActivePrompt = 'true'`,
 		`messageData.dirtyPrompt = 'true'`,
 		`data.endActive = 'true'`,
+		`revertButton`,
 		`previousButton`,
 		`nextButton`,
 		`ffwdButton`,
@@ -907,12 +916,8 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`nextButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null`,
 		`handleEditablePromptClick`,
 		`requestNavigation(index, 'end')`,
-		`handleHistoryShortcut`,
-		`isUndoShortcut`,
-		`isRedoShortcut`,
-		`recordPromptHistory`,
-		`applyPromptHistoryStep`,
-		`canUndoPromptEdit`,
+		`canRevertPromptChanges`,
+		`revertPromptChanges`,
 		`canSelectPrompt`,
 		`assistantOutputStarted`,
 		`completeThinkingStatus(assistant.article);`,
@@ -944,6 +949,13 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`dirtyDialog`,
 		`showModal`,
 		`window.confirm`,
+		`handleHistoryShortcut`,
+		`isUndoShortcut`,
+		`isRedoShortcut`,
+		`recordPromptHistory`,
+		`applyPromptHistoryStep`,
+		`canUndoPromptEdit`,
+		`canRedoPromptEdit`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("app JS = %q, did not expect redundant composer status %q", body, unwanted)

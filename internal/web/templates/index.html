@@ -117,19 +117,12 @@
             <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
             <div class="composer-controls">
               <p id="composer-status" class="composer-status" aria-live="polite"></p>
-              <button id="undo-button" class="icon-button history-button" type="button" disabled aria-label="Undo prompt edit" title="Undo prompt edit">
+              <button id="revert-button" class="icon-button history-button" type="button" disabled aria-label="Revert prompt changes" title="Revert prompt changes">
                 <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="M9 7 4 12l5 5"></path>
-                  <path d="M4 12h10a6 6 0 0 1 6 6"></path>
+                  <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+                  <path d="M3 4v5h5"></path>
                 </svg>
-                <span class="sr-only">Undo prompt edit</span>
-              </button>
-              <button id="redo-button" class="icon-button history-button" type="button" disabled aria-label="Redo prompt edit" title="Redo prompt edit">
-                <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="m15 7 5 5-5 5"></path>
-                  <path d="M20 12H10a6 6 0 0 0-6 6"></path>
-                </svg>
-                <span class="sr-only">Redo prompt edit</span>
+                <span class="sr-only">Revert prompt changes</span>
               </button>
               <button id="previous-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt" title="Previous prompt">
                 <svg aria-hidden="true" viewBox="0 0 24 24">

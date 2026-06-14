@@ -8,8 +8,7 @@
   const prompt = document.getElementById('prompt');
   const actionButton = document.getElementById('composer-action');
   const actionIcons = actionButton ? actionButton.querySelectorAll('[data-action-icon]') : [];
-  const undoButton = document.getElementById('undo-button');
-  const redoButton = document.getElementById('redo-button');
+  const revertButton = document.getElementById('revert-button');
   const previousButton = document.getElementById('previous-button');
   const nextButton = document.getElementById('next-button');
   const ffwdButton = document.getElementById('ffwd-button');
@@ -35,9 +34,6 @@
   let currentEditIndex = null;
   let originalPromptValue = '';
   let dockPromptValue = '';
-  let promptHistory = [];
-  let promptHistoryIndex = -1;
-  let applyingPromptHistory = false;
   let mermaidInitialized = false;
   let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
@@ -214,47 +210,19 @@
     return currentEditIndex !== null && hasDirtyPrompt();
   }
 
-  function resetPromptHistory(value) {
-    promptHistory = [value || ''];
-    promptHistoryIndex = 0;
+  function canRevertPromptChanges() {
+    return !currentTurn && !creatingTurn && hasDirtySelectedPrompt();
   }
 
-  function recordPromptHistory() {
-    if (applyingPromptHistory) {
-      return;
-    }
-    const value = prompt.value;
-    if (promptHistory[promptHistoryIndex] === value) {
-      return;
-    }
-    promptHistory = promptHistory.slice(0, promptHistoryIndex + 1);
-    promptHistory.push(value);
-    promptHistoryIndex = promptHistory.length - 1;
-  }
-
-  function canUndoPromptEdit() {
-    return !currentTurn && !creatingTurn && promptHistoryIndex > 0;
-  }
-
-  function canRedoPromptEdit() {
-    return !currentTurn && !creatingTurn && promptHistoryIndex >= 0 && promptHistoryIndex < promptHistory.length - 1;
-  }
-
-  function applyPromptHistoryStep(delta) {
-    const nextIndex = promptHistoryIndex + delta;
-    if (nextIndex < 0 || nextIndex >= promptHistory.length) {
+  function revertPromptChanges() {
+    if (!canRevertPromptChanges()) {
       return false;
     }
-    applyingPromptHistory = true;
-    promptHistoryIndex = nextIndex;
-    prompt.value = promptHistory[promptHistoryIndex];
-    if (currentEditIndex === null) {
-      dockPromptValue = prompt.value;
-    }
+    prompt.value = originalPromptValue;
     syncPromptHeight();
     updatePromptHistoryState();
     updateComposerState();
-    applyingPromptHistory = false;
+    focusPrompt('end');
     return true;
   }
 
@@ -409,7 +377,6 @@
       prompt.value = originalPromptValue;
     }
 
-    resetPromptHistory(prompt.value);
     syncPromptHeight();
     updatePromptHistoryState();
     updateComposerState();
@@ -424,7 +391,6 @@
     composerDock.append(form);
     currentEditIndex = null;
     dockPromptValue = '';
-    resetPromptHistory('');
     updatePromptHistoryState();
     animateComposerFrom(firstRect);
   }
@@ -704,11 +670,8 @@
     const busy = submitting;
     const dirtySelectedPrompt = hasDirtySelectedPrompt();
     const previous = userMessageBefore(transcriptPosition());
-    if (undoButton) {
-      undoButton.disabled = busy || !canUndoPromptEdit();
-    }
-    if (redoButton) {
-      redoButton.disabled = busy || !canRedoPromptEdit();
+    if (revertButton) {
+      revertButton.disabled = busy || !dirtySelectedPrompt;
     }
     if (previousButton) {
       previousButton.disabled = busy || dirtySelectedPrompt || !previous;
@@ -1108,35 +1071,6 @@
     return !historyNavigationBusy() && currentEditIndex !== null;
   }
 
-  function isUndoShortcut(event) {
-    return (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z';
-  }
-
-  function isRedoShortcut(event) {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) {
-      return false;
-    }
-    const key = event.key.toLowerCase();
-    return (key === 'y' && !event.shiftKey) || (key === 'z' && event.shiftKey);
-  }
-
-  function handleHistoryShortcut(event) {
-    if (event.isComposing || event.keyCode === 229) {
-      return false;
-    }
-    if (isUndoShortcut(event) && canUndoPromptEdit()) {
-      event.preventDefault();
-      applyPromptHistoryStep(-1);
-      return true;
-    }
-    if (isRedoShortcut(event) && canRedoPromptEdit()) {
-      event.preventDefault();
-      applyPromptHistoryStep(1);
-      return true;
-    }
-    return false;
-  }
-
   function isEditablePromptInteractiveTarget(element) {
     return Boolean(element.closest('a, button, input, label, select, textarea, [contenteditable="true"]'));
   }
@@ -1376,9 +1310,6 @@
     if (event.isComposing || event.keyCode === 229) {
       return;
     }
-    if (handleHistoryShortcut(event)) {
-      return;
-    }
     if (event.key === 'ArrowUp' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtStart()) {
       event.preventDefault();
       navigateBackward();
@@ -1402,7 +1333,6 @@
     if (currentEditIndex === null) {
       dockPromptValue = prompt.value;
     }
-    recordPromptHistory();
     syncPromptHeight();
     updatePromptHistoryState();
     updateComposerState();
@@ -1431,15 +1361,9 @@
     });
   }
 
-  if (undoButton) {
-    undoButton.addEventListener('click', function () {
-      applyPromptHistoryStep(-1);
-    });
-  }
-
-  if (redoButton) {
-    redoButton.addEventListener('click', function () {
-      applyPromptHistoryStep(1);
+  if (revertButton) {
+    revertButton.addEventListener('click', function () {
+      revertPromptChanges();
     });
   }
 
@@ -1469,13 +1393,6 @@
       requestNavigation(null, 'end');
     });
   }
-
-  document.addEventListener('keydown', function (event) {
-    if (event.defaultPrevented || event.target === prompt) {
-      return;
-    }
-    handleHistoryShortcut(event);
-  });
 
   messages.addEventListener('mousedown', handleEditablePromptMouseDown);
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
@@ -1569,7 +1486,6 @@
 
   applyThemePreference();
   enhanceAllMessages();
-  resetPromptHistory(prompt.value);
   syncPromptHeight();
   updatePromptHistoryState();
   updateComposerState();

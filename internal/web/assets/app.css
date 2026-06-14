@@ -298,14 +298,14 @@ button {
 
 .message-user[data-active-prompt="true"] {
   position: sticky;
-  top: 0.25rem;
-  bottom: 0.25rem;
+  top: 0.125rem;
+  bottom: 0.125rem;
   z-index: 3;
   box-shadow:
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
     0 0 18px rgba(0, 0, 0, 0.08),
     0 8px 24px rgba(0, 0, 0, 0.14),
-    0 2px 8px rgba(0, 0, 0, 0.1),
-    0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
+    0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .message-end-target {
@@ -905,10 +905,10 @@ button {
 
 .composer-dock[data-end-active="true"] .composer-box {
   box-shadow:
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
     0 0 18px rgba(0, 0, 0, 0.07),
     0 8px 24px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(0, 0, 0, 0.08),
-    0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
+    0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .composer-box:focus-within {
@@ -921,10 +921,10 @@ button {
 .composer-dock .composer-box:focus-within {
   border-color: var(--pico-background-color);
   box-shadow:
+    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
     0 0 18px rgba(0, 0, 0, 0.07),
     0 8px 24px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(0, 0, 0, 0.08),
-    0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
+    0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .composer textarea {
