@@ -3,7 +3,6 @@
   const messages = document.getElementById('messages');
   const messagesEnd = document.getElementById('messages-end');
   const scrollButton = document.getElementById('scroll-bottom');
-  const composerDock = document.getElementById('composer-dock');
   const form = document.getElementById('chat-form');
   const prompt = document.getElementById('prompt');
   const actionButton = document.getElementById('composer-action');
@@ -33,7 +32,7 @@
   let nextMessageIndex = initialNextMessageIndex();
   let currentEditIndex = null;
   let originalPromptValue = '';
-  let dockPromptValue = '';
+  let endPromptValue = '';
   let mermaidInitialized = false;
   let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
@@ -168,23 +167,16 @@
   function updatePromptHistoryState() {
     const activeIndex = currentEditIndex;
     const dirtySelectedPrompt = hasDirtySelectedPrompt();
-    const data = composerDock.dataset;
     const messageData = messages.dataset;
-    if (activeIndex === null) {
-      data.endActive = 'true';
-      messageData.endActive = 'true';
-      delete data.composerDetached;
-    } else {
-      delete data.endActive;
-      delete messageData.endActive;
-      data.composerDetached = 'true';
-    }
     if (composerEndTarget) {
-      composerEndTarget.hidden = activeIndex === null;
-      if (activeIndex !== null) {
-        composerEndTarget.dataset.afterActivePrompt = 'true';
-      } else {
+      if (activeIndex === null) {
+        composerEndTarget.dataset.activePrompt = 'true';
+        composerEndTarget.dataset.editing = 'true';
         delete composerEndTarget.dataset.afterActivePrompt;
+      } else {
+        delete composerEndTarget.dataset.activePrompt;
+        delete composerEndTarget.dataset.editing;
+        composerEndTarget.dataset.afterActivePrompt = 'true';
       }
     }
     if (dirtySelectedPrompt) {
@@ -207,7 +199,6 @@
         delete data.afterActivePrompt;
       }
     });
-    syncComposerReserve();
   }
 
   function hasDirtyPrompt() {
@@ -263,7 +254,7 @@
   }
 
   function ensureEmptyState() {
-    if (messages.querySelector('.message')) {
+    if (messages.querySelector('.message[data-message-index]')) {
       return;
     }
     const article = document.createElement('article');
@@ -299,19 +290,23 @@
   function editSlotFor(article) {
     let slot = article.querySelector(':scope > .message-edit-slot');
     if (!slot) {
-      slot = document.createElement('div');
-      slot.className = 'message-edit-slot';
+      slot = createPromptEditSlot();
       const actions = article.querySelector(':scope > .message-actions');
       article.insertBefore(slot, actions || null);
     }
     return slot;
   }
 
+  function createPromptEditSlot() {
+    const slot = document.createElement('div');
+    slot.className = 'message-edit-slot';
+    return slot;
+  }
+
   function clearEditingArticle() {
-    const editing = messages.querySelector('.message-user[data-editing="true"]');
-    if (editing) {
+    messages.querySelectorAll('.message-user[data-editing="true"]').forEach(function (editing) {
       delete editing.dataset.editing;
-    }
+    });
   }
 
   function animateComposerFrom(firstRect) {
@@ -353,7 +348,7 @@
   }
 
   function scrollComposerIntoView(targetIndex) {
-    const target = targetIndex === null ? composerDock : articleForEditIndex(targetIndex);
+    const target = targetIndex === null ? composerEndTarget : articleForEditIndex(targetIndex);
     if (!target) {
       return;
     }
@@ -364,15 +359,16 @@
   function moveComposerTo(targetIndex, selection) {
     const firstRect = form.getBoundingClientRect();
     if (currentEditIndex === null) {
-      dockPromptValue = prompt.value;
+      endPromptValue = prompt.value;
     }
     clearEditingArticle();
 
     if (targetIndex === null) {
-      composerDock.append(form);
+      editSlotFor(composerEndTarget).append(form);
+      composerEndTarget.dataset.editing = 'true';
       currentEditIndex = null;
-      prompt.value = dockPromptValue;
-      originalPromptValue = dockPromptValue;
+      prompt.value = endPromptValue;
+      originalPromptValue = endPromptValue;
     } else {
       const article = articleForEditIndex(targetIndex);
       if (!article) {
@@ -393,12 +389,13 @@
     focusPrompt(selection);
   }
 
-  function moveComposerToDockForSubmit() {
+  function moveComposerToEndForSubmit() {
     const firstRect = form.getBoundingClientRect();
     clearEditingArticle();
-    composerDock.append(form);
+    editSlotFor(composerEndTarget).append(form);
+    composerEndTarget.dataset.editing = 'true';
     currentEditIndex = null;
-    dockPromptValue = '';
+    endPromptValue = '';
     updatePromptHistoryState();
     animateComposerFrom(firstRect);
   }
@@ -560,6 +557,9 @@
     messageText.textContent = text || '';
 
     article.append(messageText);
+    if (role === 'user') {
+      article.append(createPromptEditSlot());
+    }
     const actions = createMessageActions(role);
     if (actions) {
       article.append(actions);
@@ -1267,19 +1267,15 @@
 
   function syncPromptHeight() {
     prompt.style.height = 'auto';
+    if (prompt.closest('.message-user')) {
+      prompt.style.height = `${prompt.scrollHeight}px`;
+      prompt.style.overflowY = 'hidden';
+      return;
+    }
     const maxHeight = parseFloat(window.getComputedStyle(prompt).maxHeight);
     const nextHeight = Number.isFinite(maxHeight) ? Math.min(prompt.scrollHeight, maxHeight) : prompt.scrollHeight;
     prompt.style.height = `${nextHeight}px`;
     prompt.style.overflowY = Number.isFinite(maxHeight) && prompt.scrollHeight > maxHeight ? 'auto' : 'hidden';
-    syncComposerReserve();
-  }
-
-  function syncComposerReserve() {
-    if (currentEditIndex === null) {
-      messages.style.setProperty('--composer-dock-reserve', `${composerDock.offsetHeight}px`);
-    } else {
-      messages.style.removeProperty('--composer-dock-reserve');
-    }
   }
 
   form.addEventListener('submit', async function (event) {
@@ -1291,7 +1287,7 @@
     }
 
     const replaceFrom = currentEditIndex;
-    moveComposerToDockForSubmit();
+    moveComposerToEndForSubmit();
     let truncatedSnapshot = null;
     if (replaceFrom !== null) {
       truncatedSnapshot = truncateMessagesFrom(replaceFrom);
@@ -1348,7 +1344,7 @@
 
   prompt.addEventListener('input', function () {
     if (currentEditIndex === null) {
-      dockPromptValue = prompt.value;
+      endPromptValue = prompt.value;
     }
     syncPromptHeight();
     updatePromptHistoryState();
@@ -1399,10 +1395,16 @@
   }
 
   if (composerEndTarget) {
-    composerEndTarget.addEventListener('click', function () {
+    composerEndTarget.addEventListener('click', function (event) {
+      if (event.target instanceof Element && isEditablePromptInteractiveTarget(event.target)) {
+        return;
+      }
       requestNavigation(null, 'end');
     });
     composerEndTarget.addEventListener('keydown', function (event) {
+      if (event.target instanceof Element && isEditablePromptInteractiveTarget(event.target)) {
+        return;
+      }
       if (event.key !== 'Enter' && event.key !== ' ') {
         return;
       }
@@ -1413,7 +1415,6 @@
 
   messages.addEventListener('mousedown', handleEditablePromptMouseDown);
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
-  window.addEventListener('resize', syncComposerReserve);
 
   if (scrollButton) {
     scrollButton.addEventListener('click', function () {

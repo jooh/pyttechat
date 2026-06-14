@@ -221,10 +221,6 @@ button {
   scrollbar-gutter: stable;
 }
 
-.messages[data-end-active="true"] {
-  padding-bottom: calc(0.25rem + var(--composer-dock-reserve, 0px));
-}
-
 .messages-end {
   width: 100%;
   height: 1px;
@@ -313,11 +309,6 @@ button {
     0 0 18px rgba(0, 0, 0, 0.08),
     0 8px 24px rgba(0, 0, 0, 0.14),
     0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.message-end-target {
-  min-height: 3.45rem;
-  cursor: text;
 }
 
 .message-end-target:focus-visible {
@@ -877,20 +868,6 @@ button {
   box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
 }
 
-.composer-dock {
-  position: absolute;
-  right: var(--shell-inline-padding);
-  bottom: 0;
-  left: var(--shell-inline-padding);
-  z-index: 4;
-  margin: 0;
-  padding: 0 0.75rem 1rem;
-}
-
-.composer-dock[data-composer-detached="true"] {
-  display: none;
-}
-
 .composer {
   margin: 0;
 }
@@ -908,35 +885,11 @@ button {
   will-change: transform;
 }
 
-.composer-dock .composer-box {
-  border-color: var(--pico-color);
-  background: var(--pico-color);
-  color: var(--pico-background-color);
-  box-shadow: none;
-}
-
-.composer-dock[data-end-active="true"] .composer-box {
-  box-shadow:
-    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
-    0 0 18px rgba(0, 0, 0, 0.07),
-    0 8px 24px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
 .composer-box:focus-within {
   border-color: var(--pico-primary);
   box-shadow:
     0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
     0 -0.35rem 1.5rem rgba(0, 0, 0, 0.04);
-}
-
-.composer-dock .composer-box:focus-within {
-  border-color: var(--pico-background-color);
-  box-shadow:
-    0 0 0 var(--pico-outline-width) var(--pico-primary-focus),
-    0 0 18px rgba(0, 0, 0, 0.07),
-    0 8px 24px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .composer textarea {
@@ -954,14 +907,6 @@ button {
 
 .composer textarea:focus {
   box-shadow: none;
-}
-
-.composer-dock .composer textarea {
-  color: var(--pico-background-color);
-}
-
-.composer-dock .composer textarea::placeholder {
-  color: color-mix(in srgb, var(--pico-background-color) 65%, transparent);
 }
 
 .composer-controls {
@@ -1050,6 +995,7 @@ button {
 }
 
 .message-user .composer textarea {
+  display: block;
   width: 100%;
   max-height: none;
   min-height: 0;
@@ -1057,6 +1003,7 @@ button {
   color: var(--pico-background-color);
   font: inherit;
   line-height: inherit;
+  overflow-y: hidden;
 }
 
 .message-user .composer textarea::placeholder {
@@ -1077,29 +1024,20 @@ button {
 }
 
 .message-user .composer-status,
-.composer-dock .composer-status,
 .message-user .history-button,
-.composer-dock .history-button,
-.message-user .action-button,
-.composer-dock .action-button {
+.message-user .action-button {
   color: var(--icon-button-inverse-color);
 }
 
 .message-user .history-button,
-.composer-dock .history-button,
-.message-user .action-button,
-.composer-dock .action-button {
+.message-user .action-button {
   border-color: var(--icon-button-inverse-border-color);
 }
 
 .message-user .history-button:hover,
 .message-user .history-button:focus-visible,
-.composer-dock .history-button:hover,
-.composer-dock .history-button:focus-visible,
 .message-user .action-button:hover,
-.composer-dock .action-button:hover,
-.message-user .action-button:focus-visible,
-.composer-dock .action-button:focus-visible {
+.message-user .action-button:focus-visible {
   background: var(--icon-button-inverse-hover-background);
   color: var(--icon-button-inverse-hover-color);
 }
@@ -1142,10 +1080,6 @@ button {
 
   .message-error {
     padding: 0.8rem 0.875rem;
-  }
-
-  .composer-dock {
-    padding-bottom: 0.75rem;
   }
 
   .composer-box {

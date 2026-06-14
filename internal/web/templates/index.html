@@ -1,3 +1,65 @@
+{{define "prompt-message"}}
+<article{{if .ID}} id="{{.ID}}"{{end}} class="message message-user{{if .EndPrompt}} message-end-target{{end}}"{{if not .EndPrompt}} data-message-index="{{.Index}}"{{end}} data-editable-prompt="true"{{if .EndPrompt}} data-composer-end-target data-end-prompt="true" data-editing="true" data-active-prompt="true" aria-label="Latest prompt" title="Latest prompt" tabindex="0"{{end}}>
+  {{if .EndPrompt}}
+    <div class="message-text message-plain">
+      <span class="sr-only">{{.Text}}</span>
+    </div>
+  {{else if .HTML}}
+    <div class="message-text markdown-body">{{.HTML}}</div>
+  {{else}}
+    <div class="message-text message-plain">{{.Text}}</div>
+  {{end}}
+  <div class="message-edit-slot">
+    {{if .EndPrompt}}
+      <form id="chat-form" class="composer" aria-label="Chat composer">
+        <div class="composer-box">
+          <label class="sr-only" for="prompt">Message</label>
+          <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
+          <div class="composer-controls">
+            <p id="composer-status" class="composer-status" aria-live="polite"></p>
+            <button id="revert-button" class="icon-button history-button" type="button" disabled aria-label="Revert prompt changes" title="Revert prompt changes">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+                <path d="M3 4v5h5"></path>
+              </svg>
+              <span class="sr-only">Revert prompt changes</span>
+            </button>
+            <button id="previous-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt" title="Previous prompt">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m18 15-6-6-6 6"></path>
+              </svg>
+              <span class="sr-only">Previous prompt</span>
+            </button>
+            <button id="next-button" class="icon-button history-button" type="button" disabled aria-label="Next prompt" title="Next prompt">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m6 9 6 6 6-6"></path>
+              </svg>
+              <span class="sr-only">Next prompt</span>
+            </button>
+            <button id="ffwd-button" class="icon-button history-button" type="button" disabled aria-label="Latest prompt" title="Latest prompt">
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m5 5 7 7-7 7"></path>
+                <path d="m12 5 7 7-7 7"></path>
+              </svg>
+              <span class="sr-only">Latest prompt</span>
+            </button>
+            <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message" title="Send message">
+              <svg data-action-icon="play" aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z"></path>
+              </svg>
+              <svg data-action-icon="stop" aria-hidden="true" viewBox="0 0 24 24" hidden>
+                <path d="M18 6 6 18"></path>
+                <path d="m6 6 12 12"></path>
+              </svg>
+              <span class="sr-only">Send or stop</span>
+            </button>
+          </div>
+        </div>
+      </form>
+    {{end}}
+  </div>
+</article>
+{{end}}
 <!doctype html>
 <html lang="en">
   <head>
@@ -62,21 +124,15 @@
       <section class="chat-panel" aria-label="Chat messages">
         <div id="messages" class="messages" aria-live="polite" data-next-message-index="{{.NextMessageIndex}}">
           {{range .Messages}}
-            <article class="message message-{{.Role}}" data-message-index="{{.Index}}"{{if eq .Role "user"}} data-editable-prompt="true"{{end}}>
-              {{range .Statuses}}
-                <div class="message-status" data-status-kind="{{.Kind}}" data-status-state="complete">
-                  <button class="message-status-toggle" type="button" data-status-toggle aria-expanded="false" aria-controls="{{.ContentID}}">{{.Label}}</button>
-                  <div id="{{.ContentID}}" class="message-status-content" hidden>{{.Text}}</div>
-                </div>
-              {{end}}
               {{if eq .Role "assistant"}}
+                <article class="message message-{{.Role}}" data-message-index="{{.Index}}">
+                  {{range .Statuses}}
+                    <div class="message-status" data-status-kind="{{.Kind}}" data-status-state="complete">
+                      <button class="message-status-toggle" type="button" data-status-toggle aria-expanded="false" aria-controls="{{.ContentID}}">{{.Label}}</button>
+                      <div id="{{.ContentID}}" class="message-status-content" hidden>{{.Text}}</div>
+                    </div>
+                  {{end}}
                 <div class="message-text markdown-body">{{.HTML}}</div>
-              {{else if .HTML}}
-                <div class="message-text markdown-body">{{.HTML}}</div>
-              {{else}}
-                <div class="message-text message-plain">{{.Text}}</div>
-              {{end}}
-              {{if eq .Role "assistant"}}
                 {{if .CompletedAt}}
                   <time class="message-completed-at" datetime="{{.CompletedAt}}">Completed {{.CompletedAt}}</time>
                 {{end}}
@@ -89,18 +145,16 @@
                     <span class="sr-only">Copy message</span>
                   </button>
                 </div>
+                </article>
+              {{else}}
+                {{template "prompt-message" .}}
               {{end}}
-            </article>
           {{else}}
             <article class="message message-empty">
               <div class="message-text message-plain">Start a conversation.</div>
             </article>
           {{end}}
-          <article id="composer-end-target" class="message message-user message-end-target" data-composer-end-target data-end-prompt="true" aria-label="Latest prompt" title="Latest prompt" tabindex="0" hidden>
-            <div class="message-text message-plain">
-              <span class="sr-only">Latest prompt</span>
-            </div>
-          </article>
+          {{template "prompt-message" .EndPrompt}}
           <div id="messages-end" class="messages-end" aria-hidden="true"></div>
         </div>
         <button id="scroll-bottom" class="scroll-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message" hidden>
@@ -110,53 +164,6 @@
         </button>
       </section>
 
-      <div id="composer-dock" class="composer-dock">
-        <form id="chat-form" class="composer" aria-label="Chat composer">
-          <div class="composer-box">
-            <label class="sr-only" for="prompt">Message</label>
-            <textarea id="prompt" name="prompt" rows="1" autocomplete="off" placeholder="Type a message"></textarea>
-            <div class="composer-controls">
-              <p id="composer-status" class="composer-status" aria-live="polite"></p>
-              <button id="revert-button" class="icon-button history-button" type="button" disabled aria-label="Revert prompt changes" title="Revert prompt changes">
-                <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="M3 12a9 9 0 1 0 3-6.7"></path>
-                  <path d="M3 4v5h5"></path>
-                </svg>
-                <span class="sr-only">Revert prompt changes</span>
-              </button>
-              <button id="previous-button" class="icon-button history-button" type="button" disabled aria-label="Previous prompt" title="Previous prompt">
-                <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="m18 15-6-6-6 6"></path>
-                </svg>
-                <span class="sr-only">Previous prompt</span>
-              </button>
-              <button id="next-button" class="icon-button history-button" type="button" disabled aria-label="Next prompt" title="Next prompt">
-                <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="m6 9 6 6 6-6"></path>
-                </svg>
-                <span class="sr-only">Next prompt</span>
-              </button>
-              <button id="ffwd-button" class="icon-button history-button" type="button" disabled aria-label="Latest prompt" title="Latest prompt">
-                <svg aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="m5 5 7 7-7 7"></path>
-                  <path d="m12 5 7 7-7 7"></path>
-                </svg>
-                <span class="sr-only">Latest prompt</span>
-              </button>
-              <button id="composer-action" class="icon-button action-button" type="button" data-action-state="send" aria-label="Send message" title="Send message">
-                <svg data-action-icon="play" aria-hidden="true" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z"></path>
-                </svg>
-                <svg data-action-icon="stop" aria-hidden="true" viewBox="0 0 24 24" hidden>
-                  <path d="M18 6 6 18"></path>
-                  <path d="m6 6 12 12"></path>
-                </svg>
-                <span class="sr-only">Send or stop</span>
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
     </main>
   </body>
 </html>

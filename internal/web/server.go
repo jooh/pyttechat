@@ -141,6 +141,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:        session.csrf,
 		ModelLabel:       modelDisplayLabel(s.model),
 		Messages:         viewMessages(messages, s.markdown),
+		EndPrompt:        endPromptViewMessage(),
 		NextMessageIndex: len(messages),
 		Username:         session.username,
 	}
@@ -711,6 +712,7 @@ type pageData struct {
 	ModelLabel       string
 	Username         string
 	Messages         []viewMessage
+	EndPrompt        viewMessage
 	NextMessageIndex int
 }
 
@@ -727,10 +729,12 @@ type viewMessage struct {
 	Index       int
 	Role        string
 	Label       string
+	ID          string
 	Text        string
 	HTML        template.HTML
 	Statuses    []viewStatus
 	CompletedAt string
+	EndPrompt   bool
 }
 
 type viewStatus struct {
@@ -769,6 +773,15 @@ func viewMessages(messages []llm.Message, renderer assistantRenderer) []viewMess
 		out = append(out, view)
 	}
 	return out
+}
+
+func endPromptViewMessage() viewMessage {
+	return viewMessage{
+		Role:      string(llm.RoleUser),
+		ID:        "composer-end-target",
+		Text:      "Latest prompt",
+		EndPrompt: true,
+	}
 }
 
 func assistantStatuses(parts []llm.Part, messageIndex int) []viewStatus {
