@@ -704,7 +704,6 @@
     const busy = submitting;
     const dirtySelectedPrompt = hasDirtySelectedPrompt();
     const previous = userMessageBefore(transcriptPosition());
-    const next = currentEditIndex === null ? null : userMessageAfter(currentEditIndex);
     if (undoButton) {
       undoButton.disabled = busy || !canUndoPromptEdit();
     }
@@ -715,7 +714,7 @@
       previousButton.disabled = busy || dirtySelectedPrompt || !previous;
     }
     if (nextButton) {
-      nextButton.disabled = busy || dirtySelectedPrompt || !next;
+      nextButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null;
     }
     if (ffwdButton) {
       ffwdButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null;
@@ -736,7 +735,7 @@
     }
   }
 
-  function finishTurn(status) {
+  function finishTurn(status, options) {
     clearStreamErrorTimer();
     closeSource();
     currentTurn = null;
@@ -746,6 +745,9 @@
     creatingTurn = false;
     updateComposerState();
     setStatus(status || '');
+    if (!options || options.focus !== false) {
+      focusPrompt('end');
+    }
   }
 
   function markTurnError(assistant, message) {
@@ -1457,6 +1459,13 @@
 
   if (composerEndTarget) {
     composerEndTarget.addEventListener('click', function () {
+      requestNavigation(null, 'end');
+    });
+    composerEndTarget.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      event.preventDefault();
       requestNavigation(null, 'end');
     });
   }

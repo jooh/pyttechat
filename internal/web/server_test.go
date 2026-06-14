@@ -104,7 +104,9 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`data-action-icon="play"`,
 		`data-action-icon="stop"`,
 		`id="composer-end-target"`,
+		`class="message message-user message-end-target"`,
 		`data-composer-end-target`,
+		`data-end-prompt="true"`,
 		`aria-label="Undo prompt edit"`,
 		`aria-label="Redo prompt edit"`,
 		`aria-label="Previous prompt"`,
@@ -812,8 +814,12 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`.history-button`,
 		`.composer-dock .composer-box`,
 		`.composer-dock[data-end-active="true"] .composer-box`,
-		`.composer-end-target`,
-		`.composer-end-target:not([hidden])`,
+		`.message-end-target`,
+		`.message-end-target:focus-visible`,
+		`.messages[data-dirty-prompt="true"] .message-end-target`,
+		`padding: 1.25rem 0.75rem 1.5rem;`,
+		`padding: 0 0.75rem 1rem;`,
+		`0 0 18px`,
 		`0 8px 24px`,
 		`0 2px 8px`,
 		`.message-user[data-editing="true"]`,
@@ -844,6 +850,7 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`.message-user .message-action`,
 		`.message-user .message-actions`,
 		`.dirty-dialog`,
+		`.composer-end-target`,
 		`.composer-dock[data-composer-detached="true"] .composer-end-target`,
 	} {
 		if strings.Contains(body, unwanted) {
@@ -896,6 +903,8 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`nextButton`,
 		`ffwdButton`,
 		`requestNavigation(null, 'end')`,
+		`requestNavigation(next ? messageIndex(next) : null, 'start')`,
+		`nextButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null`,
 		`handleEditablePromptClick`,
 		`requestNavigation(index, 'end')`,
 		`handleHistoryShortcut`,
@@ -913,6 +922,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`toggleAttribute('hidden'`,
 		`Stop response`,
 		`Stopping response`,
+		`focusPrompt('end')`,
+		`prompt.focus({ preventScroll: true })`,
+		`composerEndTarget.addEventListener('keydown'`,
 		`createMessageActions(role)`,
 		`role !== 'assistant'`,
 		`copy.title = 'Copy message'`,
@@ -920,9 +932,6 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
 		}
-	}
-	if strings.Contains(body, `prompt.focus()`) {
-		t.Fatalf("app JS = %q, did not expect turn completion to focus composer", body)
 	}
 	for _, unwanted := range []string{
 		`Generating response`,

@@ -96,9 +96,11 @@
               <div class="message-text message-plain">Start a conversation.</div>
             </article>
           {{end}}
-          <button id="composer-end-target" class="composer-end-target" type="button" data-composer-end-target aria-label="Latest prompt" title="Latest prompt" hidden>
-            <span class="sr-only">Latest prompt</span>
-          </button>
+          <article id="composer-end-target" class="message message-user message-end-target" data-composer-end-target data-end-prompt="true" aria-label="Latest prompt" title="Latest prompt" tabindex="0" hidden>
+            <div class="message-text message-plain">
+              <span class="sr-only">Latest prompt</span>
+            </div>
+          </article>
           <div id="messages-end" class="messages-end" aria-hidden="true"></div>
         </div>
         <button id="scroll-bottom" class="scroll-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message" hidden>

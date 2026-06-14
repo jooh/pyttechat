@@ -212,7 +212,7 @@ button {
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 1.25rem 0 1.5rem;
+  padding: 1.25rem 0.75rem 1.5rem;
   scroll-behavior: smooth;
   scrollbar-gutter: stable;
 }
@@ -244,6 +244,13 @@ button {
 }
 
 .messages[data-dirty-prompt="true"] .message[data-after-active-prompt="true"] {
+  pointer-events: none;
+  user-select: none;
+}
+
+.messages[data-dirty-prompt="true"] .message-end-target {
+  opacity: 0.56;
+  filter: grayscale(0.35);
   pointer-events: none;
   user-select: none;
 }
@@ -295,9 +302,20 @@ button {
   bottom: 0.25rem;
   z-index: 3;
   box-shadow:
+    0 0 18px rgba(0, 0, 0, 0.08),
     0 8px 24px rgba(0, 0, 0, 0.14),
     0 2px 8px rgba(0, 0, 0, 0.1),
     0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
+}
+
+.message-end-target {
+  min-height: 3.45rem;
+  cursor: text;
+}
+
+.message-end-target:focus-visible {
+  outline: var(--pico-outline-width) solid var(--pico-primary-focus);
+  outline-offset: 0.125rem;
 }
 
 .message-assistant {
@@ -854,7 +872,7 @@ button {
 
 .composer-dock {
   margin: 0;
-  padding: 0 0 1rem;
+  padding: 0 0.75rem 1rem;
 }
 
 .composer-dock[data-composer-detached="true"] {
@@ -887,6 +905,7 @@ button {
 
 .composer-dock[data-end-active="true"] .composer-box {
   box-shadow:
+    0 0 18px rgba(0, 0, 0, 0.07),
     0 8px 24px rgba(0, 0, 0, 0.12),
     0 2px 8px rgba(0, 0, 0, 0.08),
     0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
@@ -902,33 +921,8 @@ button {
 .composer-dock .composer-box:focus-within {
   border-color: var(--pico-background-color);
   box-shadow:
+    0 0 18px rgba(0, 0, 0, 0.07),
     0 8px 24px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(0, 0, 0, 0.08),
-    0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
-}
-
-.composer-end-target {
-  width: 100%;
-  max-width: 100%;
-  min-height: 3.45rem;
-  margin: 0;
-  padding: 0.55rem;
-  border: var(--pico-border-width) solid var(--pico-muted-border-color);
-  border-radius: 0.9rem;
-  background: var(--pico-card-background-color);
-  color: var(--pico-muted-color);
-  box-shadow: none;
-}
-
-.composer-end-target:not([hidden]) {
-  display: block;
-}
-
-.composer-end-target:hover,
-.composer-end-target:focus-visible {
-  border-color: var(--pico-primary);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.1),
     0 2px 8px rgba(0, 0, 0, 0.08),
     0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
 }
