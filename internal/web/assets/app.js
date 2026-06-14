@@ -235,9 +235,28 @@
     }
   }
 
+  function bottomScrollTop() {
+    return Math.max(0, messages.scrollHeight - messages.clientHeight);
+  }
+
+  function forceScrollToBottom() {
+    const wasEndActive = composerEndTarget?.dataset.activePrompt;
+    if (wasEndActive) {
+      delete composerEndTarget.dataset.activePrompt;
+      void composerEndTarget.offsetHeight;
+    }
+    messages.scrollTo({
+      top: bottomScrollTop(),
+      behavior: 'auto',
+    });
+    if (wasEndActive) {
+      composerEndTarget.dataset.activePrompt = wasEndActive;
+    }
+  }
+
   function scrollToBottom(force, wasNearBottom) {
     if (force || wasNearBottom) {
-      messages.scrollTop = messages.scrollHeight;
+      forceScrollToBottom();
     }
     updateScrollButton();
   }
@@ -339,25 +358,119 @@
     });
   }
 
+  function focusPromptNow(selection, preventScroll) {
+    prompt.focus({ preventScroll: preventScroll !== false });
+    const position = selection === 'start' ? 0 : prompt.value.length;
+    prompt.setSelectionRange(position, position);
+  }
+
   function focusPrompt(selection) {
     window.requestAnimationFrame(function () {
-      prompt.focus({ preventScroll: true });
-      const position = selection === 'start' ? 0 : prompt.value.length;
-      prompt.setSelectionRange(position, position);
+      focusPromptNow(selection);
     });
   }
 
-  function scrollComposerIntoView(targetIndex) {
+  function preferredScrollBehavior(force) {
+    if (force || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return 'auto';
+    }
+    return 'smooth';
+  }
+
+  function cssPixels(value) {
+    const pixels = Number.parseFloat(value);
+    return Number.isFinite(pixels) ? pixels : 0;
+  }
+
+  function clampedScrollTop(value) {
+    return Math.min(bottomScrollTop(), Math.max(0, value));
+  }
+
+  function messageGap() {
+    const gap = Number.parseFloat(window.getComputedStyle(messages).rowGap);
+    return Number.isFinite(gap) ? gap : 0;
+  }
+
+  function targetScrollBounds(target) {
+    const messagesRect = messages.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    let top = targetRect.top - messagesRect.top + messages.scrollTop;
+    if (target.dataset.activePrompt === 'true') {
+      const gap = messageGap();
+      const previous = target.previousElementSibling;
+      const next = target.nextElementSibling;
+      if (previous) {
+        top = previous.offsetTop + previous.offsetHeight + gap;
+      } else if (next) {
+        top = next.offsetTop - target.offsetHeight - gap;
+      }
+    }
+    return {
+      top,
+      bottom: top + target.offsetHeight,
+    };
+  }
+
+  function scrollComposerIntoView(targetIndex, direction, force) {
     const target = targetIndex === null ? composerEndTarget : articleForEditIndex(targetIndex);
     if (!target) {
       return;
     }
-    const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-    target.scrollIntoView({ block: targetIndex === null ? 'nearest' : 'center', behavior });
+    if (force && targetIndex === null && direction === 'down') {
+      forceScrollToBottom();
+      updateScrollButton();
+      return;
+    }
+    const targetStyle = window.getComputedStyle(target);
+    const topInset = cssPixels(targetStyle.top);
+    const bottomInset = cssPixels(targetStyle.bottom);
+    const targetBounds = targetScrollBounds(target);
+    const visibleTop = messages.scrollTop + topInset;
+    const visibleBottom = messages.scrollTop + messages.clientHeight - bottomInset;
+
+    if (!force && targetBounds.top >= visibleTop && targetBounds.bottom <= visibleBottom) {
+      updateScrollButton();
+      return;
+    }
+
+    let nextScrollTop = messages.scrollTop;
+    if (direction === 'up') {
+      nextScrollTop = targetBounds.top - topInset;
+    } else if (direction === 'down') {
+      nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
+    } else if (targetBounds.top < visibleTop) {
+      nextScrollTop = targetBounds.top - topInset;
+    } else if (targetBounds.bottom > visibleBottom) {
+      nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
+    }
+
+    nextScrollTop = clampedScrollTop(nextScrollTop);
+    if (Math.abs(nextScrollTop - messages.scrollTop) >= 1) {
+      messages.scrollTo({
+        top: nextScrollTop,
+        behavior: preferredScrollBehavior(force),
+      });
+    }
+    updateScrollButton();
   }
 
-  function moveComposerTo(targetIndex, selection) {
+  function focusEndPromptOnLoad() {
+    const alignEndPrompt = function () {
+      focusPromptNow('end', false);
+      scrollComposerIntoView(null, 'down', true);
+      updateScrollButton();
+    };
+    window.requestAnimationFrame(alignEndPrompt);
+    window.setTimeout(alignEndPrompt, 0);
+    window.setTimeout(alignEndPrompt, 100);
+    window.addEventListener('load', alignEndPrompt, { once: true });
+  }
+
+  function moveComposerTo(targetIndex, selection, direction) {
     const firstRect = form.getBoundingClientRect();
+    if (document.activeElement instanceof HTMLElement && form.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
     if (currentEditIndex === null) {
       endPromptValue = prompt.value;
     }
@@ -382,10 +495,10 @@
     }
 
     syncPromptHeight();
-    updatePromptHistoryState();
     updateComposerState();
     animateComposerFrom(firstRect);
-    scrollComposerIntoView(targetIndex);
+    scrollComposerIntoView(targetIndex, direction || 'nearest', false);
+    updatePromptHistoryState();
     focusPrompt(selection);
   }
 
@@ -1038,8 +1151,20 @@
     }
   }
 
-  function navigateTo(targetIndex, selection) {
-    moveComposerTo(targetIndex, selection || (targetIndex === null ? 'end' : 'end'));
+  function navigationDirection(targetIndex) {
+    const current = transcriptPosition();
+    const target = targetIndex === null ? nextMessageIndex : targetIndex;
+    if (target < current) {
+      return 'up';
+    }
+    if (target > current) {
+      return 'down';
+    }
+    return 'nearest';
+  }
+
+  function navigateTo(targetIndex, selection, direction) {
+    moveComposerTo(targetIndex, selection || (targetIndex === null ? 'end' : 'end'), direction);
   }
 
   function requestNavigation(targetIndex, selection) {
@@ -1049,7 +1174,7 @@
     if (hasDirtySelectedPrompt()) {
       return;
     }
-    navigateTo(targetIndex, selection);
+    navigateTo(targetIndex, selection, navigationDirection(targetIndex));
   }
 
   function navigateBackward() {
@@ -1123,6 +1248,7 @@
       return true;
     }
     if (currentEditIndex === index) {
+      scrollComposerIntoView(index, 'nearest', false);
       focusPrompt('end');
       return true;
     }
@@ -1508,5 +1634,6 @@
   syncPromptHeight();
   updatePromptHistoryState();
   updateComposerState();
+  focusEndPromptOnLoad();
   updateScrollButton();
 })();
