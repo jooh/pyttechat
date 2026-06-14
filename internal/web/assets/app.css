@@ -316,6 +316,11 @@ button {
   outline-offset: 0.125rem;
 }
 
+.message-end-target > .message-text {
+  min-height: 1.5em;
+  min-height: 1lh;
+}
+
 .message-assistant {
   align-self: stretch;
   padding-right: 2.75rem;
