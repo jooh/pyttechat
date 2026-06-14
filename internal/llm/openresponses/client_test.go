@@ -562,6 +562,40 @@ func TestClientOmitsReasoningByDefault(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotSendMessageCompletionMetadata(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("Decode request body error = %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_1"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	completed := llm.NewTextMessage(llm.RoleAssistant, "prior answer")
+	completed.CompletedAt = time.Date(2026, 6, 14, 20, 16, 13, 0, time.UTC)
+	stream, err := NewClient(server.URL).Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{
+			llm.NewTextMessage(llm.RoleUser, "prior prompt"),
+			completed,
+			llm.NewTextMessage(llm.RoleUser, "next prompt"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+	drainEvents(t, stream)
+
+	encoded, err := json.Marshal(requestBody)
+	if err != nil {
+		t.Fatalf("Marshal request body error = %v, want nil", err)
+	}
+	if strings.Contains(string(encoded), "CompletedAt") || strings.Contains(string(encoded), "completed_at") || strings.Contains(string(encoded), "2026-06-14") {
+		t.Fatalf("request body = %s, did not expect assistant completion metadata", encoded)
+	}
+}
+
 func TestClientMapsPriorReasoningIntoInput(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

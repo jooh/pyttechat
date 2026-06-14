@@ -10,10 +10,11 @@
   const actionIcons = actionButton ? actionButton.querySelectorAll('[data-action-icon]') : [];
   const undoButton = document.getElementById('undo-button');
   const redoButton = document.getElementById('redo-button');
+  const previousButton = document.getElementById('previous-button');
+  const nextButton = document.getElementById('next-button');
   const ffwdButton = document.getElementById('ffwd-button');
   const composerStatus = document.getElementById('composer-status');
   const composerEndTarget = document.getElementById('composer-end-target');
-  const dirtyDialog = document.getElementById('dirty-dialog');
   const themeToggle = document.querySelector('[data-theme-toggle]');
   const themeIcons = themeToggle ? themeToggle.querySelectorAll('[data-theme-icon]') : [];
 
@@ -34,7 +35,9 @@
   let currentEditIndex = null;
   let originalPromptValue = '';
   let dockPromptValue = '';
-  let pendingNavigation = null;
+  let promptHistory = [];
+  let promptHistoryIndex = -1;
+  let applyingPromptHistory = false;
   let mermaidInitialized = false;
   let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
@@ -168,6 +171,7 @@
 
   function updatePromptHistoryState() {
     const activeIndex = currentEditIndex;
+    const dirtySelectedPrompt = hasDirtySelectedPrompt();
     const data = composerDock.dataset;
     if (activeIndex === null) {
       data.endActive = 'true';
@@ -178,6 +182,12 @@
     }
     if (composerEndTarget) {
       composerEndTarget.hidden = activeIndex === null;
+    }
+    const messageData = messages.dataset;
+    if (dirtySelectedPrompt) {
+      messageData.dirtyPrompt = 'true';
+    } else {
+      delete messageData.dirtyPrompt;
     }
     messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
       const index = messageIndex(article);
@@ -200,6 +210,54 @@
     return prompt.value !== originalPromptValue;
   }
 
+  function hasDirtySelectedPrompt() {
+    return currentEditIndex !== null && hasDirtyPrompt();
+  }
+
+  function resetPromptHistory(value) {
+    promptHistory = [value || ''];
+    promptHistoryIndex = 0;
+  }
+
+  function recordPromptHistory() {
+    if (applyingPromptHistory) {
+      return;
+    }
+    const value = prompt.value;
+    if (promptHistory[promptHistoryIndex] === value) {
+      return;
+    }
+    promptHistory = promptHistory.slice(0, promptHistoryIndex + 1);
+    promptHistory.push(value);
+    promptHistoryIndex = promptHistory.length - 1;
+  }
+
+  function canUndoPromptEdit() {
+    return !currentTurn && !creatingTurn && promptHistoryIndex > 0;
+  }
+
+  function canRedoPromptEdit() {
+    return !currentTurn && !creatingTurn && promptHistoryIndex >= 0 && promptHistoryIndex < promptHistory.length - 1;
+  }
+
+  function applyPromptHistoryStep(delta) {
+    const nextIndex = promptHistoryIndex + delta;
+    if (nextIndex < 0 || nextIndex >= promptHistory.length) {
+      return false;
+    }
+    applyingPromptHistory = true;
+    promptHistoryIndex = nextIndex;
+    prompt.value = promptHistory[promptHistoryIndex];
+    if (currentEditIndex === null) {
+      dockPromptValue = prompt.value;
+    }
+    syncPromptHeight();
+    updatePromptHistoryState();
+    updateComposerState();
+    applyingPromptHistory = false;
+    return true;
+  }
+
   function isNearBottom() {
     return messages.scrollHeight - messages.scrollTop - messages.clientHeight < nearBottomThreshold;
   }
@@ -218,7 +276,7 @@
   }
 
   function insertMessage(article) {
-    messages.insertBefore(article, messagesEnd || null);
+    messages.insertBefore(article, composerEndTarget || messagesEnd || null);
   }
 
   function clearEmptyState() {
@@ -335,7 +393,7 @@
     clearEditingArticle();
 
     if (targetIndex === null) {
-      composerDock.insertBefore(form, composerEndTarget || null);
+      composerDock.append(form);
       currentEditIndex = null;
       prompt.value = dockPromptValue;
       originalPromptValue = dockPromptValue;
@@ -351,6 +409,7 @@
       prompt.value = originalPromptValue;
     }
 
+    resetPromptHistory(prompt.value);
     syncPromptHeight();
     updatePromptHistoryState();
     updateComposerState();
@@ -362,9 +421,10 @@
   function moveComposerToDockForSubmit() {
     const firstRect = form.getBoundingClientRect();
     clearEditingArticle();
-    composerDock.insertBefore(form, composerEndTarget || null);
+    composerDock.append(form);
     currentEditIndex = null;
     dockPromptValue = '';
+    resetPromptHistory('');
     updatePromptHistoryState();
     animateComposerFrom(firstRect);
   }
@@ -607,9 +667,19 @@
       const actions = assistant.article.querySelector('.message-actions');
       assistant.article.insertBefore(timestamp, actions || null);
     }
-    const date = new Date(completedAt);
     timestamp.dateTime = completedAt;
-    timestamp.textContent = Number.isNaN(date.getTime()) ? completedAt : `Completed ${date.toLocaleString()}`;
+    timestamp.textContent = completedAtText(completedAt);
+  }
+
+  function completedAtText(completedAt) {
+    const date = new Date(completedAt);
+    return Number.isNaN(date.getTime()) ? completedAt : `Completed ${date.toLocaleString()}`;
+  }
+
+  function localizeCompletedTimes(root) {
+    root.querySelectorAll('.message-completed-at[datetime]').forEach(function (timestamp) {
+      timestamp.textContent = completedAtText(timestamp.getAttribute('datetime') || '');
+    });
   }
 
   function updateComposerState() {
@@ -631,17 +701,24 @@
   }
 
   function updateHistoryButtons(submitting) {
-    const busy = submitting || Boolean(dirtyDialog && dirtyDialog.open);
+    const busy = submitting;
+    const dirtySelectedPrompt = hasDirtySelectedPrompt();
     const previous = userMessageBefore(transcriptPosition());
-    const canRedo = currentEditIndex !== null;
+    const next = currentEditIndex === null ? null : userMessageAfter(currentEditIndex);
     if (undoButton) {
-      undoButton.disabled = busy || !previous;
+      undoButton.disabled = busy || !canUndoPromptEdit();
     }
     if (redoButton) {
-      redoButton.disabled = busy || !canRedo;
+      redoButton.disabled = busy || !canRedoPromptEdit();
+    }
+    if (previousButton) {
+      previousButton.disabled = busy || dirtySelectedPrompt || !previous;
+    }
+    if (nextButton) {
+      nextButton.disabled = busy || dirtySelectedPrompt || !next;
     }
     if (ffwdButton) {
-      ffwdButton.disabled = busy || currentEditIndex === null;
+      ffwdButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null;
     }
   }
 
@@ -882,6 +959,7 @@
   }
 
   function enhanceMessage(article) {
+    localizeCompletedTimes(article);
     const body = article.querySelector('.markdown-body');
     if (body) {
       enhanceCodeBlocks(body);
@@ -991,37 +1069,11 @@
     moveComposerTo(targetIndex, selection || (targetIndex === null ? 'end' : 'end'));
   }
 
-  function continueNavigationAfterDiscard() {
-    if (!pendingNavigation) {
-      return;
-    }
-    const target = pendingNavigation;
-    pendingNavigation = null;
-    prompt.value = originalPromptValue;
-    if (currentEditIndex === null) {
-      dockPromptValue = originalPromptValue;
-    }
-    navigateTo(target.index, target.selection);
-  }
-
   function requestNavigation(targetIndex, selection) {
     if (currentTurn || creatingTurn) {
       return;
     }
-    if (hasDirtyPrompt()) {
-      pendingNavigation = { index: targetIndex, selection };
-      updateComposerState();
-      if (dirtyDialog && typeof dirtyDialog.showModal === 'function') {
-        dirtyDialog.showModal();
-        updateComposerState();
-        return;
-      }
-      if (window.confirm('Discard unsaved prompt changes?')) {
-        continueNavigationAfterDiscard();
-      } else {
-        pendingNavigation = null;
-      }
-      updateComposerState();
+    if (hasDirtySelectedPrompt()) {
       return;
     }
     navigateTo(targetIndex, selection);
@@ -1043,7 +1095,7 @@
   }
 
   function historyNavigationBusy() {
-    return Boolean(currentTurn) || creatingTurn || Boolean(dirtyDialog && dirtyDialog.open);
+    return Boolean(currentTurn) || creatingTurn || hasDirtySelectedPrompt();
   }
 
   function canNavigateBackward() {
@@ -1070,14 +1122,14 @@
     if (event.isComposing || event.keyCode === 229) {
       return false;
     }
-    if (isUndoShortcut(event) && canNavigateBackward()) {
+    if (isUndoShortcut(event) && canUndoPromptEdit()) {
       event.preventDefault();
-      navigateBackward();
+      applyPromptHistoryStep(-1);
       return true;
     }
-    if (isRedoShortcut(event) && canNavigateForward()) {
+    if (isRedoShortcut(event) && canRedoPromptEdit()) {
       event.preventDefault();
-      navigateForward();
+      applyPromptHistoryStep(1);
       return true;
     }
     return false;
@@ -1090,6 +1142,13 @@
   function editablePromptArticle(element) {
     const article = element.closest('.message-user[data-editable-prompt="true"][data-message-index]');
     return article && messages.contains(article) ? article : null;
+  }
+
+  function canSelectPrompt(index) {
+    if (!hasDirtySelectedPrompt()) {
+      return true;
+    }
+    return index === currentEditIndex;
   }
 
   function handleEditablePromptMouseDown(event) {
@@ -1116,6 +1175,9 @@
     }
 
     event.preventDefault();
+    if (!canSelectPrompt(index)) {
+      return true;
+    }
     if (currentEditIndex === index) {
       focusPrompt('end');
       return true;
@@ -1338,7 +1400,9 @@
     if (currentEditIndex === null) {
       dockPromptValue = prompt.value;
     }
+    recordPromptHistory();
     syncPromptHeight();
+    updatePromptHistoryState();
     updateComposerState();
   });
 
@@ -1366,11 +1430,23 @@
   }
 
   if (undoButton) {
-    undoButton.addEventListener('click', navigateBackward);
+    undoButton.addEventListener('click', function () {
+      applyPromptHistoryStep(-1);
+    });
   }
 
   if (redoButton) {
-    redoButton.addEventListener('click', navigateForward);
+    redoButton.addEventListener('click', function () {
+      applyPromptHistoryStep(1);
+    });
+  }
+
+  if (previousButton) {
+    previousButton.addEventListener('click', navigateBackward);
+  }
+
+  if (nextButton) {
+    nextButton.addEventListener('click', navigateForward);
   }
 
   if (ffwdButton) {
@@ -1382,22 +1458,6 @@
   if (composerEndTarget) {
     composerEndTarget.addEventListener('click', function () {
       requestNavigation(null, 'end');
-    });
-  }
-
-  if (dirtyDialog) {
-    dirtyDialog.addEventListener('close', function () {
-      const action = dirtyDialog.returnValue;
-      if (action === 'submit') {
-        pendingNavigation = null;
-        form.requestSubmit();
-      } else if (action === 'discard') {
-        continueNavigationAfterDiscard();
-      } else {
-        pendingNavigation = null;
-      }
-      dirtyDialog.returnValue = '';
-      updateComposerState();
     });
   }
 
@@ -1500,6 +1560,7 @@
 
   applyThemePreference();
   enhanceAllMessages();
+  resetPromptHistory(prompt.value);
   syncPromptHeight();
   updatePromptHistoryState();
   updateComposerState();

@@ -243,6 +243,11 @@ button {
     filter 120ms ease;
 }
 
+.messages[data-dirty-prompt="true"] .message[data-after-active-prompt="true"] {
+  pointer-events: none;
+  user-select: none;
+}
+
 .auth-shell {
   display: grid;
   min-height: 100vh;
@@ -286,12 +291,13 @@ button {
 
 .message-user[data-active-prompt="true"] {
   position: sticky;
-  top: 0.75rem;
-  bottom: 0.75rem;
+  top: 0.25rem;
+  bottom: 0.25rem;
   z-index: 3;
   box-shadow:
-    0 0.75rem 2rem rgba(0, 0, 0, 0.24),
-    0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 34%, transparent);
+    0 8px 24px rgba(0, 0, 0, 0.14),
+    0 2px 8px rgba(0, 0, 0, 0.1),
+    0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
 }
 
 .message-assistant {
@@ -851,6 +857,10 @@ button {
   padding: 0 0 1rem;
 }
 
+.composer-dock[data-composer-detached="true"] {
+  display: none;
+}
+
 .composer {
   margin: 0;
 }
@@ -877,8 +887,9 @@ button {
 
 .composer-dock[data-end-active="true"] .composer-box {
   box-shadow:
-    0 -0.75rem 2rem rgba(0, 0, 0, 0.16),
-    0 0 0 var(--pico-outline-width) color-mix(in srgb, var(--pico-background-color) 28%, transparent);
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 0 0 1px color-mix(in srgb, var(--pico-background-color) 24%, transparent);
 }
 
 .composer-box:focus-within {
@@ -891,32 +902,34 @@ button {
 .composer-dock .composer-box:focus-within {
   border-color: var(--pico-background-color);
   box-shadow:
-    0 -0.75rem 2rem rgba(0, 0, 0, 0.16),
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.08),
     0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
 }
 
 .composer-end-target {
-  display: none;
   width: 100%;
   max-width: 100%;
   min-height: 3.45rem;
   margin: 0;
   padding: 0.55rem;
-  border: var(--pico-border-width) solid var(--pico-color);
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
   border-radius: 0.9rem;
-  background: var(--pico-color);
-  color: var(--pico-background-color);
+  background: var(--pico-card-background-color);
+  color: var(--pico-muted-color);
   box-shadow: none;
 }
 
-.composer-dock[data-composer-detached="true"] .composer-end-target {
+.composer-end-target:not([hidden]) {
   display: block;
 }
 
 .composer-end-target:hover,
 .composer-end-target:focus-visible {
+  border-color: var(--pico-primary);
   box-shadow:
-    0 -0.45rem 1.5rem rgba(0, 0, 0, 0.12),
+    0 8px 24px rgba(0, 0, 0, 0.1),
+    0 2px 8px rgba(0, 0, 0, 0.08),
     0 0 0 var(--pico-outline-width) var(--pico-primary-focus);
 }
 
@@ -1069,51 +1082,6 @@ button {
   margin-top: 0.45rem;
   color: var(--pico-muted-color);
   font-size: 0.75rem;
-}
-
-.dirty-dialog {
-  width: min(26rem, calc(100vw - 2rem));
-  padding: 0;
-  border: var(--pico-border-width) solid var(--pico-muted-border-color);
-  border-radius: 0.5rem;
-}
-
-.dirty-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.28);
-}
-
-.dirty-dialog-form {
-  display: grid;
-  gap: 0.75rem;
-  margin: 0;
-  padding: 1rem;
-}
-
-.dirty-dialog h2,
-.dirty-dialog p {
-  margin: 0;
-}
-
-.dirty-dialog h2 {
-  font-size: 1rem;
-}
-
-.dirty-dialog p {
-  color: var(--pico-muted-color);
-  font-size: 0.9rem;
-}
-
-.dirty-dialog-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.dirty-dialog-actions button {
-  width: auto;
-  margin: 0;
-  white-space: nowrap;
 }
 
 .sr-only {

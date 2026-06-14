@@ -212,6 +212,7 @@ func (s *Server) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		RenderingInstructions: chat.WebRenderingInstructions(),
 		TelemetryComponent:    observability.ComponentWeb,
 		ReplaceFrom:           request.ReplaceFrom,
+		Now:                   timeNow,
 	})
 
 	writeJSON(w, http.StatusCreated, createTurnResponse{
@@ -723,12 +724,13 @@ type authPageData struct {
 }
 
 type viewMessage struct {
-	Index    int
-	Role     string
-	Label    string
-	Text     string
-	HTML     template.HTML
-	Statuses []viewStatus
+	Index       int
+	Role        string
+	Label       string
+	Text        string
+	HTML        template.HTML
+	Statuses    []viewStatus
+	CompletedAt string
 }
 
 type viewStatus struct {
@@ -757,6 +759,9 @@ func viewMessages(messages []llm.Message, renderer assistantRenderer) []viewMess
 			}
 			view.HTML = html
 			view.Statuses = statuses
+			if !message.CompletedAt.IsZero() {
+				view.CompletedAt = message.CompletedAt.UTC().Format(time.RFC3339)
+			}
 		}
 		if view.Text == "" && view.HTML == "" && len(view.Statuses) == 0 {
 			continue
@@ -1153,6 +1158,10 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				log.Printf("markdown final render failed for turn %s: %v", j.id, err)
 				html = escapedPlainTextHTML(fullMarkdown.String())
 			}
+			completedAt := stream.CompletedAt()
+			if completedAt.IsZero() {
+				completedAt = timeNow().UTC()
+			}
 			j.emitTerminal("done", doneEvent{
 				TurnID:             j.id,
 				AssistantMessageID: j.assistantMessageID,
@@ -1160,7 +1169,7 @@ func (j *turnJob) run(session *chat.Session, opts chat.SendOptions) {
 				Usage:              event.Usage,
 				HTML:               html,
 				Statuses:           assistantStatuses(assistantParts, -1),
-				CompletedAt:        timeNow().UTC().Format(time.RFC3339),
+				CompletedAt:        completedAt.UTC().Format(time.RFC3339),
 			})
 			return
 		}

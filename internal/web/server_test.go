@@ -89,8 +89,12 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`<p id="composer-status" class="composer-status" aria-live="polite"></p>`,
 		`id="composer-dock"`,
 		`id="undo-button"`,
-		`title="Previous prompt"`,
+		`title="Undo prompt edit"`,
 		`id="redo-button"`,
+		`title="Redo prompt edit"`,
+		`id="previous-button"`,
+		`title="Previous prompt"`,
+		`id="next-button"`,
 		`title="Next prompt"`,
 		`id="ffwd-button"`,
 		`title="Latest prompt"`,
@@ -101,7 +105,8 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`data-action-icon="stop"`,
 		`id="composer-end-target"`,
 		`data-composer-end-target`,
-		`id="dirty-dialog"`,
+		`aria-label="Undo prompt edit"`,
+		`aria-label="Redo prompt edit"`,
 		`aria-label="Previous prompt"`,
 		`aria-label="Next prompt"`,
 		`aria-label="Latest prompt"`,
@@ -805,18 +810,19 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`padding-right: 2.75rem;`,
 		`.action-button`,
 		`.history-button`,
-		`.dirty-dialog`,
 		`.composer-dock .composer-box`,
 		`.composer-dock[data-end-active="true"] .composer-box`,
 		`.composer-end-target`,
-		`.composer-dock[data-composer-detached="true"] .composer-end-target`,
-		`background: var(--pico-color);`,
+		`.composer-end-target:not([hidden])`,
+		`0 8px 24px`,
+		`0 2px 8px`,
 		`.message-user[data-editing="true"]`,
 		`.message-user[data-active-prompt="true"]`,
 		`position: sticky;`,
-		`top: 0.75rem;`,
-		`bottom: 0.75rem;`,
+		`top: 0.25rem;`,
+		`bottom: 0.25rem;`,
 		`.message[data-after-active-prompt="true"]`,
+		`.messages[data-dirty-prompt="true"] .message[data-after-active-prompt="true"]`,
 		`opacity: 0.56;`,
 		`--icon-button-inverse-color:`,
 		`--icon-button-inverse-hover-color:`,
@@ -837,6 +843,8 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`min-height: 1.75rem;`,
 		`.message-user .message-action`,
 		`.message-user .message-actions`,
+		`.dirty-dialog`,
+		`.composer-dock[data-composer-detached="true"] .composer-end-target`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("app CSS = %q, did not expect removed streaming cursor style %q", body, unwanted)
@@ -882,7 +890,10 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`updatePromptHistoryState`,
 		`data.activePrompt = 'true'`,
 		`data.afterActivePrompt = 'true'`,
+		`messageData.dirtyPrompt = 'true'`,
 		`data.endActive = 'true'`,
+		`previousButton`,
+		`nextButton`,
 		`ffwdButton`,
 		`requestNavigation(null, 'end')`,
 		`handleEditablePromptClick`,
@@ -890,6 +901,10 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`handleHistoryShortcut`,
 		`isUndoShortcut`,
 		`isRedoShortcut`,
+		`recordPromptHistory`,
+		`applyPromptHistoryStep`,
+		`canUndoPromptEdit`,
+		`canSelectPrompt`,
 		`assistantOutputStarted`,
 		`completeThinkingStatus(assistant.article);`,
 		`ArrowUp`,
@@ -917,6 +932,9 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`resumeTurn`,
 		`/resume`,
 		`article.append(createThinkingStatus());`,
+		`dirtyDialog`,
+		`showModal`,
+		`window.confirm`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("app JS = %q, did not expect redundant composer status %q", body, unwanted)
@@ -1752,6 +1770,8 @@ func TestReplaceFromTruncatesConversationContextForFollowUp(t *testing.T) {
 }
 
 func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
+	completedAt := time.Date(2026, 6, 14, 20, 16, 13, 0, time.UTC)
+	withTimeNow(t, func() time.Time { return completedAt })
 	server := httptest.NewServer(NewServer(Options{
 		Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}}),
 		Model:  "gpt-actions",
@@ -1791,6 +1811,9 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 		`data-editable-prompt="true"`,
 		`aria-label="Copy message"`,
 		`title="Copy message"`,
+		`class="message-completed-at"`,
+		`datetime="` + completedAt.Format(time.RFC3339) + `"`,
+		`Completed`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want completed message affordance %q", body, want)

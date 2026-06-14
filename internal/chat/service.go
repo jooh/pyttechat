@@ -71,6 +71,7 @@ type SendOptions struct {
 	RenderingInstructions string
 	TelemetryComponent    string
 	ReplaceFrom           *int
+	Now                   func() time.Time
 }
 
 func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*TurnStream, error) {
@@ -93,6 +94,10 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 			Summary: "auto",
 			Effort:  effort,
 		}
+	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
 	}
 
 	s.mu.Lock()
@@ -127,6 +132,7 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		keepMessages: keepMessages,
 		ctx:          ctx,
 		startedAt:    startedAt,
+		now:          now,
 	}, nil
 }
 
@@ -171,8 +177,10 @@ type TurnStream struct {
 	keepMessages int
 	ctx          context.Context
 	startedAt    time.Time
+	now          func() time.Time
 
 	assistantParts []llm.Part
+	completedAt    time.Time
 	completed      bool
 	finalized      bool
 	recorded       bool
@@ -224,6 +232,10 @@ func (s *TurnStream) Close() error {
 
 func (s *TurnStream) CommitPartial() error {
 	return s.finalize(true)
+}
+
+func (s *TurnStream) CompletedAt() time.Time {
+	return s.completedAt
 }
 
 func (s *TurnStream) appendDelta(partType llm.PartType, delta string) {
@@ -281,8 +293,9 @@ func (s *TurnStream) finalize(allowIncomplete bool) error {
 	}
 
 	assistant := llm.Message{
-		Role:  llm.RoleAssistant,
-		Parts: cloneParts(s.assistantParts),
+		Role:        llm.RoleAssistant,
+		Parts:       cloneParts(s.assistantParts),
+		CompletedAt: s.completionTime(),
 	}
 
 	s.session.mu.Lock()
@@ -292,6 +305,20 @@ func (s *TurnStream) finalize(allowIncomplete bool) error {
 	}
 	s.finalized = true
 	return nil
+}
+
+func (s *TurnStream) completionTime() time.Time {
+	if !s.completed {
+		return time.Time{}
+	}
+	if s.completedAt.IsZero() {
+		now := s.now
+		if now == nil {
+			now = time.Now
+		}
+		s.completedAt = now().UTC()
+	}
+	return s.completedAt
 }
 
 func (s *TurnStream) abort() {

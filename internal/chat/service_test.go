@@ -6,12 +6,14 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 )
 
 func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
+	completedAt := time.Date(2026, 6, 14, 12, 34, 56, 0, time.UTC)
 	client := dummy.NewClient(dummy.Turn{
 		ReasoningChunks: []string{"think", "ing"},
 		TextChunks:      []string{"ans", "wer"},
@@ -24,7 +26,10 @@ func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
 	})
 	session := NewService(client).NewSession()
 
-	stream, err := session.Send(context.Background(), "  hello  ", SendOptions{Model: "test-model"})
+	stream, err := session.Send(context.Background(), "  hello  ", SendOptions{
+		Model: "test-model",
+		Now:   func() time.Time { return completedAt },
+	})
 	if err != nil {
 		t.Fatalf("Send() error = %v, want nil", err)
 	}
@@ -49,6 +54,9 @@ func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
 	}
 	if got := messages[1].Text(); got != "answer" {
 		t.Fatalf("assistant text = %q, want answer", got)
+	}
+	if !messages[1].CompletedAt.Equal(completedAt) {
+		t.Fatalf("assistant completed_at = %v, want %v", messages[1].CompletedAt, completedAt)
 	}
 	reasoning := messages[1].Parts[0]
 	if reasoning.Type != llm.PartReasoning {
