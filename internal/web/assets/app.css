@@ -1031,6 +1031,9 @@ button {
 }
 
 .message-user .composer-box {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0.45rem;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1043,11 +1046,26 @@ button {
 }
 
 .message-user .composer textarea {
+  width: 100%;
+  max-height: none;
+  min-height: 0;
+  padding: 0;
   color: var(--pico-background-color);
+  font: inherit;
+  line-height: inherit;
 }
 
 .message-user .composer textarea::placeholder {
   color: color-mix(in srgb, var(--pico-background-color) 65%, transparent);
+}
+
+.message-user .composer-controls {
+  justify-content: flex-end;
+}
+
+.message-user .composer-status {
+  margin-right: auto;
+  text-align: left;
 }
 
 .message-user .composer-status,
