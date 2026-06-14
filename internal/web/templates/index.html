@@ -1,9 +1,7 @@
 {{define "prompt-message"}}
 <article{{if .ID}} id="{{.ID}}"{{end}} class="message message-user{{if .EndPrompt}} message-end-target{{end}}"{{if not .EndPrompt}} data-message-index="{{.Index}}"{{end}} data-editable-prompt="true"{{if .EndPrompt}} data-composer-end-target data-end-prompt="true" data-editing="true" data-active-prompt="true" aria-label="Latest prompt" title="Latest prompt" tabindex="0"{{end}}>
   {{if .EndPrompt}}
-    <div class="message-text message-plain">
-      <span class="sr-only">{{.Text}}</span>
-    </div>
+    <div class="message-text message-plain"><span class="sr-only">{{.Text}}</span></div>
   {{else if .HTML}}
     <div class="message-text markdown-body">{{.HTML}}</div>
   {{else}}

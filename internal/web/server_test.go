@@ -107,6 +107,7 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`data-editable-prompt="true"`,
 		`data-editing="true"`,
 		`data-active-prompt="true"`,
+		`<div class="message-text message-plain"><span class="sr-only">Latest prompt</span></div>`,
 		`<div class="message-edit-slot">`,
 		`aria-label="Revert prompt changes"`,
 		`aria-label="Previous prompt"`,
