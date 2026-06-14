@@ -169,17 +169,24 @@
     const activeIndex = currentEditIndex;
     const dirtySelectedPrompt = hasDirtySelectedPrompt();
     const data = composerDock.dataset;
+    const messageData = messages.dataset;
     if (activeIndex === null) {
       data.endActive = 'true';
+      messageData.endActive = 'true';
       delete data.composerDetached;
     } else {
       delete data.endActive;
+      delete messageData.endActive;
       data.composerDetached = 'true';
     }
     if (composerEndTarget) {
       composerEndTarget.hidden = activeIndex === null;
+      if (activeIndex !== null) {
+        composerEndTarget.dataset.afterActivePrompt = 'true';
+      } else {
+        delete composerEndTarget.dataset.afterActivePrompt;
+      }
     }
-    const messageData = messages.dataset;
     if (dirtySelectedPrompt) {
       messageData.dirtyPrompt = 'true';
     } else {
@@ -200,6 +207,7 @@
         delete data.afterActivePrompt;
       }
     });
+    syncComposerReserve();
   }
 
   function hasDirtyPrompt() {
@@ -1263,6 +1271,15 @@
     const nextHeight = Number.isFinite(maxHeight) ? Math.min(prompt.scrollHeight, maxHeight) : prompt.scrollHeight;
     prompt.style.height = `${nextHeight}px`;
     prompt.style.overflowY = Number.isFinite(maxHeight) && prompt.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    syncComposerReserve();
+  }
+
+  function syncComposerReserve() {
+    if (currentEditIndex === null) {
+      messages.style.setProperty('--composer-dock-reserve', `${composerDock.offsetHeight}px`);
+    } else {
+      messages.style.removeProperty('--composer-dock-reserve');
+    }
   }
 
   form.addEventListener('submit', async function (event) {
@@ -1396,6 +1413,7 @@
 
   messages.addEventListener('mousedown', handleEditablePromptMouseDown);
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
+  window.addEventListener('resize', syncComposerReserve);
 
   if (scrollButton) {
     scrollButton.addEventListener('click', function () {
