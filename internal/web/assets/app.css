@@ -286,15 +286,21 @@ button {
 }
 
 .message-user {
+  --message-user-block-padding: 0.875rem;
+  --message-user-inline-padding: 1rem;
+
   align-self: stretch;
-  padding: 0.875rem 1rem;
+  padding: var(--message-user-block-padding) var(--message-user-inline-padding);
   border-radius: 0.5rem;
   background: var(--pico-color);
   color: var(--pico-background-color);
 }
 
 .message-user[data-editable-prompt="true"] {
+  --prompt-control-reserve: 2.65rem;
+
   cursor: text;
+  padding-bottom: calc(var(--message-user-block-padding) + var(--prompt-control-reserve));
 }
 
 .message-user[data-active-prompt="true"] {
@@ -1031,9 +1037,7 @@ button {
 }
 
 .message-user .composer-box {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 0.45rem;
+  display: contents;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1060,6 +1064,10 @@ button {
 }
 
 .message-user .composer-controls {
+  position: absolute;
+  right: var(--message-user-inline-padding);
+  bottom: var(--message-user-block-padding);
+  left: var(--message-user-inline-padding);
   justify-content: flex-end;
 }
 
@@ -1127,7 +1135,11 @@ button {
     display: none;
   }
 
-  .message-user,
+  .message-user {
+    --message-user-block-padding: 0.8rem;
+    --message-user-inline-padding: 0.875rem;
+  }
+
   .message-error {
     padding: 0.8rem 0.875rem;
   }
