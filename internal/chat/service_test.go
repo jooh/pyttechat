@@ -288,11 +288,14 @@ func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
 	if requests[0].Messages[0].Text() != "stored prompt" || requests[0].Messages[1].Text() != "stored answer" || requests[0].Messages[2].Text() != "fresh prompt" {
 		t.Fatalf("request messages = %#v, want stored history before fresh prompt", requests[0].Messages)
 	}
-	if len(store.replaced) != 1 {
-		t.Fatalf("replace count = %d, want 1", len(store.replaced))
+	if len(store.appended) != 1 {
+		t.Fatalf("append count = %d, want 1", len(store.appended))
 	}
-	if store.replaced[0].conversationID != 42 || store.replaced[0].keepMessages != 2 || store.replaced[0].user.Text() != "fresh prompt" || store.replaced[0].assistant.Text() != "fresh answer" {
-		t.Fatalf("replaced turn = %#v, want completed fresh turn after stored history in conversation 42", store.replaced[0])
+	if len(store.replaced) != 0 {
+		t.Fatalf("replace count = %d, want 0", len(store.replaced))
+	}
+	if store.appended[0].conversationID != 42 || store.appended[0].user.Text() != "fresh prompt" || store.appended[0].assistant.Text() != "fresh answer" {
+		t.Fatalf("appended turn = %#v, want completed fresh turn in conversation 42", store.appended[0])
 	}
 }
 

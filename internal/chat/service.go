@@ -112,6 +112,7 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		observability.RecordSpanError(span, err)
 		return nil, err
 	}
+	replaceTail := opts.ReplaceFrom != nil
 	request.Messages = append(llm.CloneMessages(s.messages[:keepMessages]), userMessage.Clone())
 	s.inFlight = true
 	s.mu.Unlock()
@@ -130,6 +131,7 @@ func (s *Session) Send(ctx context.Context, prompt string, opts SendOptions) (*T
 		stream:       stream,
 		userMessage:  userMessage,
 		keepMessages: keepMessages,
+		replaceTail:  replaceTail,
 		ctx:          ctx,
 		startedAt:    startedAt,
 		now:          now,
@@ -162,7 +164,7 @@ func (s *Session) CommitStopped(ctx context.Context, prompt string, opts SendOpt
 		s.mu.Unlock()
 		return err
 	}
-	if err := s.replaceTailLocked(ctx, keepMessages, userMessage, llm.Message{Role: llm.RoleAssistant}); err != nil {
+	if err := s.appendOrReplaceTailLocked(ctx, opts.ReplaceFrom != nil, keepMessages, userMessage, llm.Message{Role: llm.RoleAssistant}); err != nil {
 		s.mu.Unlock()
 		return err
 	}
@@ -175,6 +177,7 @@ type TurnStream struct {
 	stream       llm.Stream
 	userMessage  llm.Message
 	keepMessages int
+	replaceTail  bool
 	ctx          context.Context
 	startedAt    time.Time
 	now          func() time.Time
@@ -300,7 +303,7 @@ func (s *TurnStream) finalize(allowIncomplete bool) error {
 
 	s.session.mu.Lock()
 	defer s.session.mu.Unlock()
-	if err := s.session.replaceTailLocked(context.Background(), s.keepMessages, s.userMessage, assistant); err != nil {
+	if err := s.session.appendOrReplaceTailLocked(context.Background(), s.replaceTail, s.keepMessages, s.userMessage, assistant); err != nil {
 		return err
 	}
 	s.finalized = true
@@ -381,13 +384,23 @@ func replaceFromIndex(messages []llm.Message, replaceFrom *int) (int, error) {
 	return keepMessages, nil
 }
 
-func (s *Session) replaceTailLocked(ctx context.Context, keepMessages int, userMessage, assistant llm.Message) error {
+func (s *Session) appendOrReplaceTailLocked(ctx context.Context, replaceTail bool, keepMessages int, userMessage, assistant llm.Message) error {
 	if s.store != nil {
-		if err := s.store.ReplaceTailAndAppendTurn(ctx, s.conversationID, keepMessages, userMessage.Clone(), assistant.Clone()); err != nil {
+		var err error
+		if replaceTail {
+			err = s.store.ReplaceTailAndAppendTurn(ctx, s.conversationID, keepMessages, userMessage.Clone(), assistant.Clone())
+		} else {
+			err = s.store.AppendTurn(ctx, s.conversationID, userMessage.Clone(), assistant.Clone())
+		}
+		if err != nil {
 			return err
 		}
 	}
-	nextMessages := append(llm.CloneMessages(s.messages[:keepMessages]), userMessage.Clone(), assistant.Clone())
+	nextMessages := llm.CloneMessages(s.messages)
+	if replaceTail {
+		nextMessages = llm.CloneMessages(s.messages[:keepMessages])
+	}
+	nextMessages = append(nextMessages, userMessage.Clone(), assistant.Clone())
 	s.messages = nextMessages
 	s.inFlight = false
 	return nil

@@ -411,6 +411,16 @@
     };
   }
 
+  function targetVisualBounds(target) {
+    const messagesRect = messages.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const top = targetRect.top - messagesRect.top + messages.scrollTop;
+    return {
+      top,
+      bottom: top + targetRect.height,
+    };
+  }
+
   function scrollComposerIntoView(targetIndex, direction, force) {
     const target = targetIndex === null ? composerEndTarget : articleForEditIndex(targetIndex);
     if (!target) {
@@ -424,23 +434,24 @@
     const targetStyle = window.getComputedStyle(target);
     const topInset = cssPixels(targetStyle.top);
     const bottomInset = cssPixels(targetStyle.bottom);
-    const targetBounds = targetScrollBounds(target);
+    const visualBounds = targetVisualBounds(target);
     const visibleTop = messages.scrollTop + topInset;
     const visibleBottom = messages.scrollTop + messages.clientHeight - bottomInset;
 
-    if (!force && targetBounds.top >= visibleTop && targetBounds.bottom <= visibleBottom) {
+    if (!force && visualBounds.top >= visibleTop && visualBounds.bottom <= visibleBottom) {
       updateScrollButton();
       return;
     }
 
+    const targetBounds = targetScrollBounds(target);
     let nextScrollTop = messages.scrollTop;
     if (direction === 'up') {
       nextScrollTop = targetBounds.top - topInset;
     } else if (direction === 'down') {
       nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
-    } else if (targetBounds.top < visibleTop) {
+    } else if (visualBounds.top < visibleTop) {
       nextScrollTop = targetBounds.top - topInset;
-    } else if (targetBounds.bottom > visibleBottom) {
+    } else if (visualBounds.bottom > visibleBottom) {
       nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
     }
 
