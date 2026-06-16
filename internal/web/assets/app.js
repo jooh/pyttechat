@@ -5,9 +5,14 @@
   const scrollButton = document.getElementById('scroll-bottom');
   const form = document.getElementById('chat-form');
   const prompt = document.getElementById('prompt');
-  const sendButton = document.getElementById('send-button');
-  const stopButton = document.getElementById('stop-button');
+  const actionButton = document.getElementById('composer-action');
+  const actionIcons = actionButton ? actionButton.querySelectorAll('[data-action-icon]') : [];
+  const revertButton = document.getElementById('revert-button');
+  const previousButton = document.getElementById('previous-button');
+  const nextButton = document.getElementById('next-button');
+  const ffwdButton = document.getElementById('ffwd-button');
   const composerStatus = document.getElementById('composer-status');
+  const composerEndTarget = document.getElementById('composer-end-target');
   const themeToggle = document.querySelector('[data-theme-toggle]');
   const themeIcons = themeToggle ? themeToggle.querySelectorAll('[data-theme-icon]') : [];
 
@@ -24,6 +29,10 @@
   let abortRequested = false;
   let creatingTurn = false;
   let statusIDCounter = 0;
+  let nextMessageIndex = initialNextMessageIndex();
+  let currentEditIndex = null;
+  let originalPromptValue = '';
+  let endPromptValue = '';
   let mermaidInitialized = false;
   let mermaidCurrentTheme = '';
   let mermaidIDCounter = 0;
@@ -102,8 +111,118 @@
 
   function setStatus(text) {
     if (composerStatus) {
-      composerStatus.textContent = text;
+      composerStatus.textContent = text || '';
     }
+  }
+
+  function messageIndex(article) {
+    const value = Number.parseInt(article?.dataset.messageIndex || '', 10);
+    return Number.isFinite(value) ? value : -1;
+  }
+
+  function initialNextMessageIndex() {
+    let maxIndex = -1;
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      maxIndex = Math.max(maxIndex, messageIndex(article));
+    });
+    const serverIndex = Number.parseInt(messages.dataset.nextMessageIndex || '', 10);
+    if (Number.isFinite(serverIndex) && serverIndex >= 0) {
+      return Math.max(serverIndex, maxIndex + 1);
+    }
+    return maxIndex + 1;
+  }
+
+  function transcriptPosition() {
+    return currentEditIndex === null ? nextMessageIndex : currentEditIndex;
+  }
+
+  function userMessages() {
+    return Array.from(messages.querySelectorAll('.message-user[data-editable-prompt="true"][data-message-index]'))
+      .sort(function (left, right) {
+        return messageIndex(left) - messageIndex(right);
+      });
+  }
+
+  function userMessageBefore(index) {
+    let target = null;
+    userMessages().forEach(function (article) {
+      if (messageIndex(article) < index) {
+        target = article;
+      }
+    });
+    return target;
+  }
+
+  function userMessageAfter(index) {
+    return userMessages().find(function (article) {
+      return messageIndex(article) > index;
+    }) || null;
+  }
+
+  function promptTextForArticle(article) {
+    const body = article?.querySelector('.message-text');
+    return body ? body.textContent || '' : '';
+  }
+
+  function updatePromptHistoryState() {
+    const activeIndex = currentEditIndex;
+    const dirtySelectedPrompt = hasDirtySelectedPrompt();
+    const messageData = messages.dataset;
+    if (composerEndTarget) {
+      if (activeIndex === null) {
+        composerEndTarget.dataset.activePrompt = 'true';
+        composerEndTarget.dataset.editing = 'true';
+        delete composerEndTarget.dataset.afterActivePrompt;
+      } else {
+        delete composerEndTarget.dataset.activePrompt;
+        delete composerEndTarget.dataset.editing;
+        composerEndTarget.dataset.afterActivePrompt = 'true';
+      }
+    }
+    if (dirtySelectedPrompt) {
+      messageData.dirtyPrompt = 'true';
+    } else {
+      delete messageData.dirtyPrompt;
+    }
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      const index = messageIndex(article);
+      const data = article.dataset;
+      if (activeIndex !== null && index === activeIndex && article.matches('.message-user[data-editable-prompt="true"]')) {
+        data.activePrompt = 'true';
+      } else {
+        delete data.activePrompt;
+      }
+
+      if (activeIndex !== null && index > activeIndex) {
+        data.afterActivePrompt = 'true';
+      } else {
+        delete data.afterActivePrompt;
+      }
+    });
+  }
+
+  function hasDirtyPrompt() {
+    return prompt.value !== originalPromptValue;
+  }
+
+  function hasDirtySelectedPrompt() {
+    return currentEditIndex !== null && hasDirtyPrompt();
+  }
+
+  function canRevertPromptChanges() {
+    return !currentTurn && !creatingTurn && hasDirtySelectedPrompt();
+  }
+
+  function revertPromptChanges() {
+    if (!canRevertPromptChanges()) {
+      return false;
+    }
+    prompt.value = originalPromptValue;
+    syncPromptHeight();
+    updatePromptHistoryState();
+    updateComposerState();
+    focusPrompt('end');
+    return true;
   }
 
   function isNearBottom() {
@@ -116,15 +235,34 @@
     }
   }
 
+  function bottomScrollTop() {
+    return Math.max(0, messages.scrollHeight - messages.clientHeight);
+  }
+
+  function forceScrollToBottom() {
+    const wasEndActive = composerEndTarget?.dataset.activePrompt;
+    if (wasEndActive) {
+      delete composerEndTarget.dataset.activePrompt;
+      void composerEndTarget.offsetHeight;
+    }
+    messages.scrollTo({
+      top: bottomScrollTop(),
+      behavior: 'auto',
+    });
+    if (wasEndActive) {
+      composerEndTarget.dataset.activePrompt = wasEndActive;
+    }
+  }
+
   function scrollToBottom(force, wasNearBottom) {
     if (force || wasNearBottom) {
-      messages.scrollTop = messages.scrollHeight;
+      forceScrollToBottom();
     }
     updateScrollButton();
   }
 
   function insertMessage(article) {
-    messages.insertBefore(article, messagesEnd || null);
+    messages.insertBefore(article, composerEndTarget || messagesEnd || null);
   }
 
   function clearEmptyState() {
@@ -135,7 +273,7 @@
   }
 
   function ensureEmptyState() {
-    if (messages.querySelector('.message')) {
+    if (messages.querySelector('.message[data-message-index]')) {
       return;
     }
     const article = document.createElement('article');
@@ -154,6 +292,7 @@
     if (message && message.article && message.article.parentNode === messages) {
       message.article.remove();
       ensureEmptyState();
+      updatePromptHistoryState();
       updateScrollButton();
     }
   }
@@ -163,7 +302,232 @@
     removeMessage(user);
   }
 
-  function createMessageActions() {
+  function articleForEditIndex(index) {
+    return messages.querySelector(`.message-user[data-editable-prompt="true"][data-message-index="${index}"]`);
+  }
+
+  function editSlotFor(article) {
+    let slot = article.querySelector(':scope > .message-edit-slot');
+    if (!slot) {
+      slot = createPromptEditSlot();
+      const actions = article.querySelector(':scope > .message-actions');
+      article.insertBefore(slot, actions || null);
+    }
+    return slot;
+  }
+
+  function createPromptEditSlot() {
+    const slot = document.createElement('div');
+    slot.className = 'message-edit-slot';
+    return slot;
+  }
+
+  function clearEditingArticle() {
+    messages.querySelectorAll('.message-user[data-editing="true"]').forEach(function (editing) {
+      delete editing.dataset.editing;
+    });
+  }
+
+  function animateComposerFrom(firstRect) {
+    if (!firstRect || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
+    const box = form.querySelector('.composer-box');
+    if (!box) {
+      return;
+    }
+    const lastRect = form.getBoundingClientRect();
+    const dx = firstRect.left - lastRect.left;
+    const dy = firstRect.top - lastRect.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+      return;
+    }
+    box.style.transition = 'none';
+    box.style.transform = `translate(${dx}px, ${dy}px)`;
+    window.requestAnimationFrame(function () {
+      box.style.transition = 'transform 180ms ease';
+      box.style.transform = 'translate(0, 0)';
+    });
+    box.addEventListener('transitionend', function cleanup(event) {
+      if (event.propertyName !== 'transform') {
+        return;
+      }
+      box.style.transition = '';
+      box.style.transform = '';
+      box.removeEventListener('transitionend', cleanup);
+    });
+  }
+
+  function focusPromptNow(selection, preventScroll) {
+    prompt.focus({ preventScroll: preventScroll !== false });
+    const position = selection === 'start' ? 0 : prompt.value.length;
+    prompt.setSelectionRange(position, position);
+  }
+
+  function focusPrompt(selection) {
+    window.requestAnimationFrame(function () {
+      focusPromptNow(selection);
+    });
+  }
+
+  function preferredScrollBehavior(force) {
+    if (force || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return 'auto';
+    }
+    return 'smooth';
+  }
+
+  function cssPixels(value) {
+    const pixels = Number.parseFloat(value);
+    return Number.isFinite(pixels) ? pixels : 0;
+  }
+
+  function clampedScrollTop(value) {
+    return Math.min(bottomScrollTop(), Math.max(0, value));
+  }
+
+  function messageGap() {
+    const gap = Number.parseFloat(window.getComputedStyle(messages).rowGap);
+    return Number.isFinite(gap) ? gap : 0;
+  }
+
+  function targetScrollBounds(target) {
+    const messagesRect = messages.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    let top = targetRect.top - messagesRect.top + messages.scrollTop;
+    if (target.dataset.activePrompt === 'true') {
+      const gap = messageGap();
+      const previous = target.previousElementSibling;
+      const next = target.nextElementSibling;
+      if (previous) {
+        top = previous.offsetTop + previous.offsetHeight + gap;
+      } else if (next) {
+        top = next.offsetTop - target.offsetHeight - gap;
+      }
+    }
+    return {
+      top,
+      bottom: top + target.offsetHeight,
+    };
+  }
+
+  function targetVisualBounds(target) {
+    const messagesRect = messages.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const top = targetRect.top - messagesRect.top + messages.scrollTop;
+    return {
+      top,
+      bottom: top + targetRect.height,
+    };
+  }
+
+  function scrollComposerIntoView(targetIndex, direction, force) {
+    const target = targetIndex === null ? composerEndTarget : articleForEditIndex(targetIndex);
+    if (!target) {
+      return;
+    }
+    if (force && targetIndex === null && direction === 'down') {
+      forceScrollToBottom();
+      updateScrollButton();
+      return;
+    }
+    const targetStyle = window.getComputedStyle(target);
+    const topInset = cssPixels(targetStyle.top);
+    const bottomInset = cssPixels(targetStyle.bottom);
+    const visualBounds = targetVisualBounds(target);
+    const visibleTop = messages.scrollTop + topInset;
+    const visibleBottom = messages.scrollTop + messages.clientHeight - bottomInset;
+
+    if (!force && visualBounds.top >= visibleTop && visualBounds.bottom <= visibleBottom) {
+      updateScrollButton();
+      return;
+    }
+
+    const targetBounds = targetScrollBounds(target);
+    let nextScrollTop = messages.scrollTop;
+    if (direction === 'up') {
+      nextScrollTop = targetBounds.top - topInset;
+    } else if (direction === 'down') {
+      nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
+    } else if (visualBounds.top < visibleTop) {
+      nextScrollTop = targetBounds.top - topInset;
+    } else if (visualBounds.bottom > visibleBottom) {
+      nextScrollTop = targetBounds.bottom - messages.clientHeight + bottomInset;
+    }
+
+    nextScrollTop = clampedScrollTop(nextScrollTop);
+    if (Math.abs(nextScrollTop - messages.scrollTop) >= 1) {
+      messages.scrollTo({
+        top: nextScrollTop,
+        behavior: preferredScrollBehavior(force),
+      });
+    }
+    updateScrollButton();
+  }
+
+  function focusEndPromptOnLoad() {
+    const alignEndPrompt = function () {
+      focusPromptNow('end', false);
+      scrollComposerIntoView(null, 'down', true);
+      updateScrollButton();
+    };
+    window.requestAnimationFrame(alignEndPrompt);
+    window.setTimeout(alignEndPrompt, 0);
+    window.setTimeout(alignEndPrompt, 100);
+    window.addEventListener('load', alignEndPrompt, { once: true });
+  }
+
+  function moveComposerTo(targetIndex, selection, direction) {
+    const firstRect = form.getBoundingClientRect();
+    if (document.activeElement instanceof HTMLElement && form.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    if (currentEditIndex === null) {
+      endPromptValue = prompt.value;
+    }
+    clearEditingArticle();
+
+    if (targetIndex === null) {
+      editSlotFor(composerEndTarget).append(form);
+      composerEndTarget.dataset.editing = 'true';
+      currentEditIndex = null;
+      prompt.value = endPromptValue;
+      originalPromptValue = endPromptValue;
+    } else {
+      const article = articleForEditIndex(targetIndex);
+      if (!article) {
+        return;
+      }
+      article.dataset.editing = 'true';
+      editSlotFor(article).append(form);
+      currentEditIndex = targetIndex;
+      originalPromptValue = promptTextForArticle(article);
+      prompt.value = originalPromptValue;
+    }
+
+    syncPromptHeight();
+    updateComposerState();
+    animateComposerFrom(firstRect);
+    scrollComposerIntoView(targetIndex, direction || 'nearest', false);
+    updatePromptHistoryState();
+    focusPrompt(selection);
+  }
+
+  function moveComposerToEndForSubmit() {
+    const firstRect = form.getBoundingClientRect();
+    clearEditingArticle();
+    editSlotFor(composerEndTarget).append(form);
+    composerEndTarget.dataset.editing = 'true';
+    currentEditIndex = null;
+    endPromptValue = '';
+    updatePromptHistoryState();
+    animateComposerFrom(firstRect);
+  }
+
+  function createMessageActions(role) {
+    if (role !== 'assistant') {
+      return null;
+    }
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     actions.setAttribute('aria-label', 'Message actions');
@@ -173,6 +537,7 @@
     copy.type = 'button';
     copy.dataset.copyMessage = '';
     copy.setAttribute('aria-label', 'Copy message');
+    copy.title = 'Copy message';
     copy.innerHTML = `${copyIcon}<span class="sr-only">Copy message</span>`;
 
     actions.append(copy);
@@ -301,6 +666,12 @@
     clearEmptyState();
     const article = document.createElement('article');
     article.className = `message message-${role}`;
+    const index = options && Number.isInteger(options.messageIndex) ? options.messageIndex : nextMessageIndex;
+    article.dataset.messageIndex = String(index);
+    nextMessageIndex = Math.max(nextMessageIndex, index + 1);
+    if (role === 'user') {
+      article.dataset.editablePrompt = 'true';
+    }
     if (options && options.streaming) {
       article.classList.add('message-streaming');
     }
@@ -309,13 +680,51 @@
     messageText.className = role === 'assistant' ? 'message-text markdown-body' : 'message-text message-plain';
     messageText.textContent = text || '';
 
-    if (role === 'assistant' && options && options.streaming) {
-      article.append(createThinkingStatus());
+    article.append(messageText);
+    if (role === 'user') {
+      article.append(createPromptEditSlot());
     }
-    article.append(messageText, createMessageActions());
+    const actions = createMessageActions(role);
+    if (actions) {
+      article.append(actions);
+    }
     insertMessage(article);
     scrollToBottom(true, true);
     return { article, text: messageText };
+  }
+
+  function truncateMessagesFrom(index) {
+    const snapshot = {
+      articles: [],
+      nextMessageIndex,
+    };
+    messages.querySelectorAll('.message[data-message-index]').forEach(function (article) {
+      if (messageIndex(article) >= index) {
+        snapshot.articles.push(article);
+        article.remove();
+      }
+    });
+    nextMessageIndex = index;
+    ensureEmptyState();
+    updatePromptHistoryState();
+    updateScrollButton();
+    return snapshot;
+  }
+
+  function restoreTruncatedMessages(snapshot) {
+    if (!snapshot) {
+      return;
+    }
+    const empty = messages.querySelector('.message-empty');
+    if (empty) {
+      empty.remove();
+    }
+    snapshot.articles.forEach(function (article) {
+      insertMessage(article);
+    });
+    nextMessageIndex = snapshot.nextMessageIndex;
+    updatePromptHistoryState();
+    updateScrollButton();
   }
 
   function assignMessageIDs(user, assistant, turn) {
@@ -341,6 +750,10 @@
     return Boolean(status && status.textContent);
   }
 
+  function assistantOutputStarted(assistant) {
+    return Boolean(assistant && (assistant.text.textContent || assistant.text.innerHTML));
+  }
+
   function setCompletedAt(assistant, completedAt) {
     if (!completedAt) {
       return;
@@ -352,16 +765,55 @@
       const actions = assistant.article.querySelector('.message-actions');
       assistant.article.insertBefore(timestamp, actions || null);
     }
-    const date = new Date(completedAt);
     timestamp.dateTime = completedAt;
-    timestamp.textContent = Number.isNaN(date.getTime()) ? completedAt : `Completed ${date.toLocaleString()}`;
+    timestamp.textContent = completedAtText(completedAt);
+  }
+
+  function completedAtText(completedAt) {
+    const date = new Date(completedAt);
+    return Number.isNaN(date.getTime()) ? completedAt : `Completed ${date.toLocaleString()}`;
+  }
+
+  function localizeCompletedTimes(root) {
+    root.querySelectorAll('.message-completed-at[datetime]').forEach(function (timestamp) {
+      timestamp.textContent = completedAtText(timestamp.getAttribute('datetime') || '');
+    });
   }
 
   function updateComposerState() {
     const submitting = Boolean(currentTurn) || creatingTurn;
-    sendButton.disabled = submitting || prompt.value.trim() === '';
-    stopButton.disabled = !currentTurn || abortRequested;
+    if (actionButton) {
+      const state = currentTurn ? (abortRequested ? 'stopping' : 'stop') : 'send';
+      const label = currentTurn ? (abortRequested ? 'Stopping response' : 'Stop response') : 'Send message';
+      const iconName = currentTurn ? 'stop' : 'play';
+      actionButton.dataset.actionState = state;
+      actionButton.disabled = currentTurn ? abortRequested : creatingTurn || prompt.value.trim() === '';
+      actionButton.setAttribute('aria-label', label);
+      actionButton.title = label;
+      actionIcons.forEach(function (icon) {
+        icon.toggleAttribute('hidden', icon.dataset.actionIcon !== iconName);
+      });
+    }
+    updateHistoryButtons(submitting);
     prompt.disabled = submitting;
+  }
+
+  function updateHistoryButtons(submitting) {
+    const busy = submitting;
+    const dirtySelectedPrompt = hasDirtySelectedPrompt();
+    const previous = userMessageBefore(transcriptPosition());
+    if (revertButton) {
+      revertButton.disabled = busy || !dirtySelectedPrompt;
+    }
+    if (previousButton) {
+      previousButton.disabled = busy || dirtySelectedPrompt || !previous;
+    }
+    if (nextButton) {
+      nextButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null;
+    }
+    if (ffwdButton) {
+      ffwdButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null;
+    }
   }
 
   function closeSource() {
@@ -378,7 +830,7 @@
     }
   }
 
-  function finishTurn(status) {
+  function finishTurn(status, options) {
     clearStreamErrorTimer();
     closeSource();
     currentTurn = null;
@@ -387,7 +839,10 @@
     abortRequested = false;
     creatingTurn = false;
     updateComposerState();
-    setStatus(status || 'Ready');
+    setStatus(status || '');
+    if (!options || options.focus !== false) {
+      focusPrompt('end');
+    }
   }
 
   function markTurnError(assistant, message) {
@@ -401,6 +856,29 @@
     error.className = 'message-error-detail';
     error.textContent = message;
     assistant.text.replaceChildren(error);
+  }
+
+  function markTurnStopped(assistant) {
+    if (!assistant) {
+      return;
+    }
+    assistant.article.classList.remove('message-streaming');
+    assistant.article.classList.add('message-stopped');
+    completeThinkingStatus(assistant.article);
+    if (!assistantHasContent(assistant)) {
+      const status = assistant.article.querySelector('.message-status');
+      if (status) {
+        status.remove();
+      }
+    }
+    let note = assistant.article.querySelector('.message-stopped-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'message-stopped-note';
+      note.textContent = 'Stopped';
+      const actions = assistant.article.querySelector('.message-actions');
+      assistant.article.insertBefore(note, actions || null);
+    }
   }
 
   function languageFromCode(code) {
@@ -578,6 +1056,7 @@
   }
 
   function enhanceMessage(article) {
+    localizeCompletedTimes(article);
     const body = article.querySelector('.markdown-body');
     if (body) {
       enhanceCodeBlocks(body);
@@ -636,14 +1115,18 @@
     }, 1400);
   }
 
-  async function submitPrompt(text) {
+  async function submitPrompt(text, options) {
+    const body = { prompt: text };
+    if (options && Number.isInteger(options.replaceFrom)) {
+      body.replace_from = options.replaceFrom;
+    }
     const response = await fetch('/chat/turns', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         [csrfHeaderName()]: csrfToken,
       },
-      body: JSON.stringify({ prompt: text }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       throw new Error(await response.text());
@@ -666,17 +1149,130 @@
   async function requestAbort(turn) {
     abortRequested = true;
     updateComposerState();
-    setStatus('Stopping response');
+    setStatus('');
     try {
       await abortTurn(turn);
     } catch (error) {
       if (currentTurn === turn) {
         abortRequested = false;
         updateComposerState();
-        setStatus('Generating response');
+        setStatus('');
       }
       throw error;
     }
+  }
+
+  function navigationDirection(targetIndex) {
+    const current = transcriptPosition();
+    const target = targetIndex === null ? nextMessageIndex : targetIndex;
+    if (target < current) {
+      return 'up';
+    }
+    if (target > current) {
+      return 'down';
+    }
+    return 'nearest';
+  }
+
+  function navigateTo(targetIndex, selection, direction) {
+    moveComposerTo(targetIndex, selection || (targetIndex === null ? 'end' : 'end'), direction);
+  }
+
+  function requestNavigation(targetIndex, selection) {
+    if (currentTurn || creatingTurn) {
+      return;
+    }
+    if (hasDirtySelectedPrompt()) {
+      return;
+    }
+    navigateTo(targetIndex, selection, navigationDirection(targetIndex));
+  }
+
+  function navigateBackward() {
+    const previous = userMessageBefore(transcriptPosition());
+    if (previous) {
+      requestNavigation(messageIndex(previous), 'end');
+    }
+  }
+
+  function navigateForward() {
+    if (currentEditIndex === null) {
+      return;
+    }
+    const next = userMessageAfter(currentEditIndex);
+    requestNavigation(next ? messageIndex(next) : null, 'start');
+  }
+
+  function historyNavigationBusy() {
+    return Boolean(currentTurn) || creatingTurn || hasDirtySelectedPrompt();
+  }
+
+  function canNavigateBackward() {
+    return !historyNavigationBusy() && Boolean(userMessageBefore(transcriptPosition()));
+  }
+
+  function canNavigateForward() {
+    return !historyNavigationBusy() && currentEditIndex !== null;
+  }
+
+  function isEditablePromptInteractiveTarget(element) {
+    return Boolean(element.closest('a, button, input, label, select, textarea, [contenteditable="true"]'));
+  }
+
+  function editablePromptArticle(element) {
+    const article = element.closest('.message-user[data-editable-prompt="true"][data-message-index]');
+    return article && messages.contains(article) ? article : null;
+  }
+
+  function canSelectPrompt(index) {
+    if (!hasDirtySelectedPrompt()) {
+      return true;
+    }
+    return index === currentEditIndex;
+  }
+
+  function handleEditablePromptMouseDown(event) {
+    if (!(event.target instanceof Element) || isEditablePromptInteractiveTarget(event.target)) {
+      return;
+    }
+    const article = editablePromptArticle(event.target);
+    if (article) {
+      event.preventDefault();
+    }
+  }
+
+  function handleEditablePromptClick(event) {
+    if (!(event.target instanceof Element) || isEditablePromptInteractiveTarget(event.target)) {
+      return false;
+    }
+    const article = editablePromptArticle(event.target);
+    if (!article) {
+      return false;
+    }
+    const index = messageIndex(article);
+    if (index < 0) {
+      return false;
+    }
+
+    event.preventDefault();
+    if (!canSelectPrompt(index)) {
+      return true;
+    }
+    if (currentEditIndex === index) {
+      scrollComposerIntoView(index, 'nearest', false);
+      focusPrompt('end');
+      return true;
+    }
+    requestNavigation(index, 'end');
+    return true;
+  }
+
+  function caretAtStart() {
+    return prompt.selectionStart === 0 && prompt.selectionEnd === 0;
+  }
+
+  function caretAtEnd() {
+    return prompt.selectionStart === prompt.value.length && prompt.selectionEnd === prompt.value.length;
   }
 
   async function abortDisconnectedTurn(turn, user, assistant) {
@@ -693,7 +1289,7 @@
       return;
     }
     if (currentTurn === turn) {
-      discardTurn(user, assistant);
+      markTurnStopped(assistant);
       finishTurn('Stream disconnected');
     }
   }
@@ -708,7 +1304,7 @@
 
     currentSource.onopen = function () {
       clearStreamErrorTimer();
-      setStatus('Generating response');
+      setStatus('');
     };
 
     currentSource.addEventListener('preview', function (event) {
@@ -723,6 +1319,7 @@
         assistant.article.dataset.messageId = data.assistant_message_id;
         assistant.text.id = `message-body-${data.assistant_message_id}`;
       }
+      completeThinkingStatus(assistant.article);
       assistant.text.innerHTML = data.html || '';
       enhanceMessage(assistant.article);
       scrollToBottom(false, wasNearBottom);
@@ -736,6 +1333,9 @@
       const wasNearBottom = isNearBottom();
       const data = JSON.parse(event.data);
       ensureThinkingStatus(assistant.article).textContent += data.delta || '';
+      if (assistantOutputStarted(assistant)) {
+        completeThinkingStatus(assistant.article);
+      }
       scrollToBottom(false, wasNearBottom);
     });
 
@@ -762,7 +1362,7 @@
         removeMessage(assistant);
       }
       scrollToBottom(false, wasNearBottom);
-      finishTurn('Response complete');
+      finishTurn();
     });
 
     currentSource.addEventListener('aborted', function () {
@@ -770,8 +1370,8 @@
         return;
       }
       clearStreamErrorTimer();
-      discardTurn(user, assistant);
-      finishTurn('Response stopped');
+      markTurnStopped(assistant);
+      finishTurn('');
     });
 
     currentSource.addEventListener('stream-error', function (event) {
@@ -804,6 +1404,11 @@
 
   function syncPromptHeight() {
     prompt.style.height = 'auto';
+    if (prompt.closest('.message-user')) {
+      prompt.style.height = `${prompt.scrollHeight}px`;
+      prompt.style.overflowY = 'hidden';
+      return;
+    }
     const maxHeight = parseFloat(window.getComputedStyle(prompt).maxHeight);
     const nextHeight = Number.isFinite(maxHeight) ? Math.min(prompt.scrollHeight, maxHeight) : prompt.scrollHeight;
     prompt.style.height = `${nextHeight}px`;
@@ -818,18 +1423,27 @@
       return;
     }
 
-    const user = addMessage('user', text);
+    const replaceFrom = currentEditIndex;
+    moveComposerToEndForSubmit();
+    let truncatedSnapshot = null;
+    if (replaceFrom !== null) {
+      truncatedSnapshot = truncateMessagesFrom(replaceFrom);
+    }
+
+    const userIndex = replaceFrom === null ? nextMessageIndex : replaceFrom;
+    const user = addMessage('user', text, { messageIndex: userIndex });
     const assistant = addMessage('assistant', '', { streaming: true });
     currentUser = user;
     currentAssistant = assistant;
     prompt.value = '';
+    originalPromptValue = '';
     syncPromptHeight();
     creatingTurn = true;
     updateComposerState();
     setStatus('Starting response');
 
     try {
-      const turn = await submitPrompt(text);
+      const turn = await submitPrompt(text, replaceFrom === null ? null : { replaceFrom });
       assignMessageIDs(user, assistant, turn);
       creatingTurn = false;
       subscribe(turn, user, assistant);
@@ -837,12 +1451,26 @@
     } catch (error) {
       creatingTurn = false;
       discardTurn(user, assistant);
+      restoreTruncatedMessages(truncatedSnapshot);
       finishTurn('Message not sent');
     }
   });
 
   prompt.addEventListener('keydown', function (event) {
-    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229) {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    if (event.key === 'ArrowUp' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtStart()) {
+      event.preventDefault();
+      navigateBackward();
+      return;
+    }
+    if (event.key === 'ArrowDown' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && caretAtEnd()) {
+      event.preventDefault();
+      navigateForward();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
     event.preventDefault();
@@ -852,29 +1480,77 @@
   });
 
   prompt.addEventListener('input', function () {
+    if (currentEditIndex === null) {
+      endPromptValue = prompt.value;
+    }
     syncPromptHeight();
+    updatePromptHistoryState();
     updateComposerState();
   });
 
-  stopButton.addEventListener('click', async function () {
-    if (!currentTurn) {
-      return;
-    }
-    const turn = currentTurn;
-    try {
-      await requestAbort(turn);
-      if (currentTurn === turn) {
-        discardTurn(currentUser, currentAssistant);
-        finishTurn('Response stopped');
+  if (actionButton) {
+    actionButton.addEventListener('click', async function () {
+      if (!currentTurn) {
+        form.requestSubmit();
+        return;
       }
-    } catch (error) {
-      if (currentTurn === turn && currentAssistant) {
-        markTurnError(currentAssistant, 'The turn could not be stopped.');
-        finishTurn('Stop failed');
+      const turn = currentTurn;
+      const assistant = currentAssistant;
+      try {
+        await requestAbort(turn);
+        if (currentTurn === turn) {
+          markTurnStopped(assistant);
+          finishTurn('');
+        }
+      } catch (error) {
+        if (currentTurn === turn && assistant) {
+          markTurnError(assistant, 'The turn could not be stopped.');
+          finishTurn('Stop failed');
+        }
       }
-    }
-  });
+    });
+  }
 
+  if (revertButton) {
+    revertButton.addEventListener('click', function () {
+      revertPromptChanges();
+    });
+  }
+
+  if (previousButton) {
+    previousButton.addEventListener('click', navigateBackward);
+  }
+
+  if (nextButton) {
+    nextButton.addEventListener('click', navigateForward);
+  }
+
+  if (ffwdButton) {
+    ffwdButton.addEventListener('click', function () {
+      requestNavigation(null, 'end');
+    });
+  }
+
+  if (composerEndTarget) {
+    composerEndTarget.addEventListener('click', function (event) {
+      if (event.target instanceof Element && isEditablePromptInteractiveTarget(event.target)) {
+        return;
+      }
+      requestNavigation(null, 'end');
+    });
+    composerEndTarget.addEventListener('keydown', function (event) {
+      if (event.target instanceof Element && isEditablePromptInteractiveTarget(event.target)) {
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      event.preventDefault();
+      requestNavigation(null, 'end');
+    });
+  }
+
+  messages.addEventListener('mousedown', handleEditablePromptMouseDown);
   messages.addEventListener('scroll', updateScrollButton, { passive: true });
 
   if (scrollButton) {
@@ -904,6 +1580,10 @@
 
   document.addEventListener('click', async function (event) {
     if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    if (handleEditablePromptClick(event)) {
       return;
     }
 
@@ -963,6 +1643,8 @@
   applyThemePreference();
   enhanceAllMessages();
   syncPromptHeight();
+  updatePromptHistoryState();
   updateComposerState();
+  focusEndPromptOnLoad();
   updateScrollButton();
 })();

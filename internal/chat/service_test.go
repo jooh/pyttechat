@@ -6,12 +6,14 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/llm-chat-web/internal/llm"
 	"example.com/llm-chat-web/internal/llm/dummy"
 )
 
 func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
+	completedAt := time.Date(2026, 6, 14, 12, 34, 56, 0, time.UTC)
 	client := dummy.NewClient(dummy.Turn{
 		ReasoningChunks: []string{"think", "ing"},
 		TextChunks:      []string{"ans", "wer"},
@@ -24,7 +26,10 @@ func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
 	})
 	session := NewService(client).NewSession()
 
-	stream, err := session.Send(context.Background(), "  hello  ", SendOptions{Model: "test-model"})
+	stream, err := session.Send(context.Background(), "  hello  ", SendOptions{
+		Model: "test-model",
+		Now:   func() time.Time { return completedAt },
+	})
 	if err != nil {
 		t.Fatalf("Send() error = %v, want nil", err)
 	}
@@ -49,6 +54,9 @@ func TestSessionSendStreamsAndStoresCompletedTurn(t *testing.T) {
 	}
 	if got := messages[1].Text(); got != "answer" {
 		t.Fatalf("assistant text = %q, want answer", got)
+	}
+	if !messages[1].CompletedAt.Equal(completedAt) {
+		t.Fatalf("assistant completed_at = %v, want %v", messages[1].CompletedAt, completedAt)
 	}
 	reasoning := messages[1].Parts[0]
 	if reasoning.Type != llm.PartReasoning {
@@ -136,6 +144,121 @@ func TestSessionSendIncludesPriorTurnsAndReasoning(t *testing.T) {
 	}
 }
 
+func TestSessionSendCanReplaceTailFromUserMessage(t *testing.T) {
+	client := dummy.NewClient(
+		dummy.Turn{TextChunks: []string{"first answer"}},
+		dummy.Turn{TextChunks: []string{"second answer"}},
+		dummy.Turn{TextChunks: []string{"replacement answer"}},
+	)
+	session := NewService(client).NewSession()
+
+	first, err := session.Send(context.Background(), "first", SendOptions{})
+	if err != nil {
+		t.Fatalf("first Send() error = %v, want nil", err)
+	}
+	collectEvents(t, first)
+	second, err := session.Send(context.Background(), "second", SendOptions{})
+	if err != nil {
+		t.Fatalf("second Send() error = %v, want nil", err)
+	}
+	collectEvents(t, second)
+
+	replaceFrom := 2
+	replacement, err := session.Send(context.Background(), "edited second", SendOptions{ReplaceFrom: &replaceFrom})
+	if err != nil {
+		t.Fatalf("replacement Send() error = %v, want nil", err)
+	}
+	collectEvents(t, replacement)
+
+	requests := client.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	if got := requests[2].Messages; len(got) != 3 || got[0].Text() != "first" || got[1].Text() != "first answer" || got[2].Text() != "edited second" {
+		t.Fatalf("replacement request messages = %#v, want first turn plus edited prompt", requests[2].Messages)
+	}
+	messages := session.Messages()
+	if len(messages) != 4 {
+		t.Fatalf("stored message count = %d, want 4", len(messages))
+	}
+	if messages[0].Text() != "first" || messages[1].Text() != "first answer" || messages[2].Text() != "edited second" || messages[3].Text() != "replacement answer" {
+		t.Fatalf("stored messages = %#v, want tail replaced by edited turn", messages)
+	}
+}
+
+func TestSessionSendRejectsReplaceFromAssistantMessage(t *testing.T) {
+	session := NewService(dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}})).NewSession()
+	stream, err := session.Send(context.Background(), "first", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	replaceFrom := 1
+	_, err = session.Send(context.Background(), "bad edit", SendOptions{ReplaceFrom: &replaceFrom})
+	if !errors.Is(err, ErrInvalidReplaceFrom) {
+		t.Fatalf("Send() error = %v, want ErrInvalidReplaceFrom", err)
+	}
+}
+
+func TestSessionValidateReplaceFromAndCommitStopped(t *testing.T) {
+	session := NewService(dummy.NewClient()).NewSession()
+	if err := session.ValidateReplaceFrom(nil); err != nil {
+		t.Fatalf("ValidateReplaceFrom(nil) error = %v, want nil", err)
+	}
+	if err := session.CommitStopped(context.Background(), "  first  ", SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped append error = %v, want nil", err)
+	}
+	messages := session.Messages()
+	if len(messages) != 2 || messages[0].Text() != "first" || messages[1].Role != llm.RoleAssistant {
+		t.Fatalf("messages after stopped append = %#v, want user plus empty assistant", messages)
+	}
+
+	replaceFrom := 0
+	if err := session.ValidateReplaceFrom(&replaceFrom); err != nil {
+		t.Fatalf("ValidateReplaceFrom(user index) error = %v, want nil", err)
+	}
+	if err := session.CommitStopped(context.Background(), "edited first", SendOptions{ReplaceFrom: &replaceFrom}); err != nil {
+		t.Fatalf("CommitStopped replace error = %v, want nil", err)
+	}
+	messages = session.Messages()
+	if len(messages) != 2 || messages[0].Text() != "edited first" {
+		t.Fatalf("messages after stopped replacement = %#v, want edited stopped turn", messages)
+	}
+
+	assistantIndex := 1
+	if err := session.ValidateReplaceFrom(&assistantIndex); !errors.Is(err, ErrInvalidReplaceFrom) {
+		t.Fatalf("ValidateReplaceFrom(assistant index) error = %v, want ErrInvalidReplaceFrom", err)
+	}
+	if err := session.CommitStopped(context.Background(), "  ", SendOptions{}); !errors.Is(err, ErrEmptyPrompt) {
+		t.Fatalf("CommitStopped(empty) error = %v, want ErrEmptyPrompt", err)
+	}
+}
+
+func TestSessionCommitStoppedRejectsInvalidReplaceFromAndStoreFailure(t *testing.T) {
+	session := NewService(dummy.NewClient()).NewSession()
+	invalidReplaceFrom := 1
+	if err := session.CommitStopped(context.Background(), "bad edit", SendOptions{ReplaceFrom: &invalidReplaceFrom}); !errors.Is(err, ErrInvalidReplaceFrom) {
+		t.Fatalf("CommitStopped(invalid replace_from) error = %v, want ErrInvalidReplaceFrom", err)
+	}
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf("messages after invalid stopped edit = %#v, want none", messages)
+	}
+
+	store := &chatStore{appendErr: errors.New("stopped append failed")}
+	persistent, err := NewPersistentService(dummy.NewClient(), store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+	err = persistent.CommitStopped(context.Background(), "hello", SendOptions{})
+	if err == nil || !strings.Contains(err.Error(), "stopped append failed") {
+		t.Fatalf("CommitStopped store error = %v, want stopped append failed", err)
+	}
+	if messages := persistent.Messages(); len(messages) != 0 {
+		t.Fatalf("messages after failed stopped append = %#v, want none", messages)
+	}
+}
+
 func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
 	store := &chatStore{
 		messages: []llm.Message{
@@ -168,8 +291,42 @@ func TestPersistentSessionLoadsHistoryAndAppendsCompletedTurn(t *testing.T) {
 	if len(store.appended) != 1 {
 		t.Fatalf("append count = %d, want 1", len(store.appended))
 	}
+	if len(store.replaced) != 0 {
+		t.Fatalf("replace count = %d, want 0", len(store.replaced))
+	}
 	if store.appended[0].conversationID != 42 || store.appended[0].user.Text() != "fresh prompt" || store.appended[0].assistant.Text() != "fresh answer" {
 		t.Fatalf("appended turn = %#v, want completed fresh turn in conversation 42", store.appended[0])
+	}
+}
+
+func TestPersistentSessionReplaceTailPersistsEditedTurn(t *testing.T) {
+	store := &chatStore{
+		messages: []llm.Message{
+			llm.NewTextMessage(llm.RoleUser, "stored first"),
+			llm.NewTextMessage(llm.RoleAssistant, "stored first answer"),
+			llm.NewTextMessage(llm.RoleUser, "stored second"),
+			llm.NewTextMessage(llm.RoleAssistant, "stored second answer"),
+		},
+	}
+	client := dummy.NewClient(dummy.Turn{TextChunks: []string{"edited answer"}})
+	session, err := NewPersistentService(client, store).NewPersistedSession(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("NewPersistedSession error = %v, want nil", err)
+	}
+
+	replaceFrom := 2
+	stream, err := session.Send(context.Background(), "edited second", SendOptions{ReplaceFrom: &replaceFrom})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	collectEvents(t, stream)
+
+	if len(store.replaced) != 1 {
+		t.Fatalf("replace count = %d, want 1", len(store.replaced))
+	}
+	replaced := store.replaced[0]
+	if replaced.conversationID != 42 || replaced.keepMessages != 2 || replaced.user.Text() != "edited second" || replaced.assistant.Text() != "edited answer" {
+		t.Fatalf("replaced turn = %#v, want replacement at message index 2", replaced)
 	}
 }
 
@@ -191,7 +348,7 @@ func TestPersistentSessionReturnsHistoryLoadFailure(t *testing.T) {
 	}
 }
 
-func TestPersistentSessionDoesNotAppendFailedOrAbortedTurn(t *testing.T) {
+func TestPersistentSessionDoesNotAppendFailedOrClosedTurn(t *testing.T) {
 	t.Run("failed stream", func(t *testing.T) {
 		store := &chatStore{}
 		session, err := NewPersistentService(failingClient{}, store).NewPersistedSession(context.Background(), 42)
@@ -207,12 +364,12 @@ func TestPersistentSessionDoesNotAppendFailedOrAbortedTurn(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Next() error = nil, want failure")
 		}
-		if len(store.appended) != 0 {
-			t.Fatalf("append count = %d, want 0", len(store.appended))
+		if len(store.appended) != 0 || len(store.replaced) != 0 {
+			t.Fatalf("stored turn count = appended %d replaced %d, want 0", len(store.appended), len(store.replaced))
 		}
 	})
 
-	t.Run("aborted stream", func(t *testing.T) {
+	t.Run("closed stream without partial commit", func(t *testing.T) {
 		store := &chatStore{}
 		session, err := NewPersistentService(eventClient{events: []llm.Event{{Type: llm.EventTextDelta, Delta: "partial"}}}, store).NewPersistedSession(context.Background(), 42)
 		if err != nil {
@@ -225,10 +382,47 @@ func TestPersistentSessionDoesNotAppendFailedOrAbortedTurn(t *testing.T) {
 		if err := stream.Close(); err != nil {
 			t.Fatalf("Close() error = %v, want nil", err)
 		}
-		if len(store.appended) != 0 {
-			t.Fatalf("append count = %d, want 0", len(store.appended))
+		if len(store.appended) != 0 || len(store.replaced) != 0 {
+			t.Fatalf("stored turn count = appended %d replaced %d, want 0", len(store.appended), len(store.replaced))
 		}
 	})
+}
+
+func TestSessionCanCommitPartialTurn(t *testing.T) {
+	session := NewService(eventClient{
+		events: []llm.Event{
+			{Type: llm.EventReasoningDelta, Delta: "thinking"},
+			{Type: llm.EventTextDelta, Delta: "partial"},
+		},
+	}).NewSession()
+
+	stream, err := session.Send(context.Background(), "hello", SendOptions{})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	if event, nextErr := stream.Next(); nextErr != nil || event.Type != llm.EventReasoningDelta {
+		t.Fatalf("first Next() = %#v, %v; want reasoning delta", event, nextErr)
+	}
+	if event, nextErr := stream.Next(); nextErr != nil || event.Type != llm.EventTextDelta {
+		t.Fatalf("second Next() = %#v, %v; want text delta", event, nextErr)
+	}
+	if err := stream.CommitPartial(); err != nil {
+		t.Fatalf("CommitPartial() error = %v, want nil", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+
+	messages := session.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(messages))
+	}
+	if messages[0].Text() != "hello" || messages[1].Text() != "partial" {
+		t.Fatalf("messages = %#v, want committed partial turn", messages)
+	}
+	if messages[1].Parts[0].Type != llm.PartReasoning || messages[1].Parts[0].Text != "thinking" {
+		t.Fatalf("assistant parts = %#v, want partial reasoning and text", messages[1].Parts)
+	}
 }
 
 func TestPersistentSessionReturnsAppendFailureAndDoesNotKeepInFlight(t *testing.T) {
@@ -580,7 +774,7 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 		userMessage: llm.NewTextMessage(llm.RoleUser, "hello"),
 	}
 
-	if err := turn.finalize(); err != nil {
+	if err := turn.finalize(false); err != nil {
 		t.Fatalf("finalize before completion error = %v, want nil", err)
 	}
 	if got := len(session.Messages()); got != 0 {
@@ -588,10 +782,10 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 	}
 
 	turn.completed = true
-	if err := turn.finalize(); err != nil {
+	if err := turn.finalize(false); err != nil {
 		t.Fatalf("finalize after completion error = %v, want nil", err)
 	}
-	if err := turn.finalize(); err != nil {
+	if err := turn.finalize(false); err != nil {
 		t.Fatalf("second finalize error = %v, want nil", err)
 	}
 	if got := len(session.Messages()); got != 2 {
@@ -600,6 +794,24 @@ func TestTurnStreamFinalizeAndClonePartsGuards(t *testing.T) {
 
 	if cloned := cloneParts(nil); cloned != nil {
 		t.Fatalf("cloneParts(nil) = %#v, want nil", cloned)
+	}
+}
+
+func TestTurnStreamRecordErrorTreatsContextCancellationAsCancelled(t *testing.T) {
+	cancelled := &TurnStream{}
+	cancelled.recordError(context.Canceled)
+	if !cancelled.recorded {
+		t.Fatalf("cancelled stream was not recorded")
+	}
+
+	failed := &TurnStream{}
+	failed.recordError(errors.New("stream failed"))
+	if !failed.recorded {
+		t.Fatalf("failed stream was not recorded")
+	}
+	failed.recordError(context.Canceled)
+	if !failed.recorded {
+		t.Fatalf("second recordError changed recorded state")
 	}
 }
 
@@ -677,11 +889,19 @@ type chatStore struct {
 	messages    []llm.Message
 	messagesErr error
 	appended    []appendedTurn
+	replaced    []replacedTurn
 	appendErr   error
 }
 
 type appendedTurn struct {
 	conversationID int64
+	user           llm.Message
+	assistant      llm.Message
+}
+
+type replacedTurn struct {
+	conversationID int64
+	keepMessages   int
 	user           llm.Message
 	assistant      llm.Message
 }
@@ -699,6 +919,19 @@ func (s *chatStore) AppendTurn(_ context.Context, conversationID int64, user, as
 	}
 	s.appended = append(s.appended, appendedTurn{
 		conversationID: conversationID,
+		user:           user.Clone(),
+		assistant:      assistant.Clone(),
+	})
+	return nil
+}
+
+func (s *chatStore) ReplaceTailAndAppendTurn(_ context.Context, conversationID int64, keepMessages int, user, assistant llm.Message) error {
+	if s.appendErr != nil {
+		return s.appendErr
+	}
+	s.replaced = append(s.replaced, replacedTurn{
+		conversationID: conversationID,
+		keepMessages:   keepMessages,
 		user:           user.Clone(),
 		assistant:      assistant.Clone(),
 	})

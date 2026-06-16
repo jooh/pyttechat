@@ -1,6 +1,9 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Role string
 
@@ -45,8 +48,9 @@ func (p Part) Clone() Part {
 }
 
 type Message struct {
-	Role  Role
-	Parts []Part
+	Role        Role
+	Parts       []Part
+	CompletedAt time.Time
 }
 
 func NewTextMessage(role Role, text string) Message {
@@ -69,7 +73,7 @@ func (m Message) Text() string {
 }
 
 func (m Message) Clone() Message {
-	clone := Message{Role: m.Role}
+	clone := Message{Role: m.Role, CompletedAt: m.CompletedAt}
 	if m.Parts != nil {
 		clone.Parts = make([]Part, len(m.Parts))
 		for i, part := range m.Parts {

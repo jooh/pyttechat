@@ -26,8 +26,82 @@ func TestSQLiteMigrateIsIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(context.Background(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("schema version query error = %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
+	}
+}
+
+func TestSQLiteMigrateAddsCompletedAtToVersionOneMessages(t *testing.T) {
+	db, openErr := sql.Open("sqlite", ":memory:")
+	if openErr != nil {
+		t.Fatalf("sql.Open memory error = %v, want nil", openErr)
+	}
+	store := NewSQLiteForDB(db)
+	ctx := context.Background()
+	if _, err := store.db.ExecContext(ctx, `
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version (version) VALUES (1);
+CREATE TABLE users (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL UNIQUE,
+	password_hash BLOB NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE TABLE conversations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	title TEXT NOT NULL,
+	is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+	created_at TEXT NOT NULL
+);
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+	sequence INTEGER NOT NULL,
+	role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+	parts_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	UNIQUE (conversation_id, sequence)
+);
+`); err != nil {
+		t.Fatalf("create version one schema error = %v, want nil", err)
+	}
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate version one schema error = %v, want nil", err)
+	}
+
+	var version int
+	if err := store.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("schema version query error = %v", err)
+	}
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
+	}
+	rows, err := store.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
+	if err != nil {
+		t.Fatalf("messages table_info error = %v, want nil", err)
+	}
+	defer rows.Close()
+	hasCompletedAt := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan table_info error = %v, want nil", err)
+		}
+		if name == "completed_at" {
+			hasCompletedAt = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows error = %v, want nil", err)
+	}
+	if !hasCompletedAt {
+		t.Fatalf("messages table missing completed_at column after migration")
 	}
 }
 
@@ -343,7 +417,8 @@ func TestSQLiteMessagesAreOrderedAndPartsJSONRoundTrips(t *testing.T) {
 	}
 
 	firstAssistant := llm.Message{
-		Role: llm.RoleAssistant,
+		Role:        llm.RoleAssistant,
+		CompletedAt: time.Date(2026, 6, 14, 10, 11, 12, 0, time.UTC),
 		Parts: []llm.Part{
 			{Type: llm.PartReasoning, ID: "rs_1", Summary: []string{"thinking"}, EncryptedContent: "encrypted"},
 			{Type: llm.PartText, Text: "answer one"},
@@ -367,6 +442,12 @@ func TestSQLiteMessagesAreOrderedAndPartsJSONRoundTrips(t *testing.T) {
 	if messages[0].Text() != "first" || messages[1].Text() != "answer one" || messages[2].Text() != "second" || messages[3].Text() != "answer two" {
 		t.Fatalf("messages = %#v, want insertion order", messages)
 	}
+	if !messages[1].CompletedAt.Equal(firstAssistant.CompletedAt) {
+		t.Fatalf("first assistant completed_at = %v, want %v", messages[1].CompletedAt, firstAssistant.CompletedAt)
+	}
+	if !messages[3].CompletedAt.IsZero() {
+		t.Fatalf("second assistant completed_at = %v, want zero value", messages[3].CompletedAt)
+	}
 	reasoning := messages[1].Parts[0]
 	if reasoning.ID != "rs_1" || reasoning.EncryptedContent != "encrypted" || len(reasoning.Summary) != 1 {
 		t.Fatalf("round-tripped reasoning part = %#v, want metadata intact", reasoning)
@@ -374,6 +455,39 @@ func TestSQLiteMessagesAreOrderedAndPartsJSONRoundTrips(t *testing.T) {
 	image := messages[1].Parts[2]
 	if image.Type != llm.PartImage || image.URL != "/assets/app.css" || image.Width != 10 || image.Height != 20 {
 		t.Fatalf("round-tripped image part = %#v, want image metadata intact", image)
+	}
+}
+
+func TestSQLiteReplaceTailAndAppendTurnTruncatesAndAppends(t *testing.T) {
+	store := newMigratedTestSQLite(t)
+	ctx := context.Background()
+	user := createTestUser(t, store, "dina")
+	conversation, err := store.DefaultConversationForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
+	}
+
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer one")); appendErr != nil {
+		t.Fatalf("AppendTurn first error = %v, want nil", appendErr)
+	}
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "second"), llm.NewTextMessage(llm.RoleAssistant, "answer two")); appendErr != nil {
+		t.Fatalf("AppendTurn second error = %v, want nil", appendErr)
+	}
+
+	err = store.ReplaceTailAndAppendTurn(ctx, conversation.ID, 2, llm.NewTextMessage(llm.RoleUser, "edited second"), llm.NewTextMessage(llm.RoleAssistant, "replacement answer"))
+	if err != nil {
+		t.Fatalf("ReplaceTailAndAppendTurn error = %v, want nil", err)
+	}
+
+	messages, err := store.Messages(ctx, conversation.ID)
+	if err != nil {
+		t.Fatalf("Messages error = %v, want nil", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("message count = %d, want 4", len(messages))
+	}
+	if messages[0].Text() != "first" || messages[1].Text() != "answer one" || messages[2].Text() != "edited second" || messages[3].Text() != "replacement answer" {
+		t.Fatalf("messages = %#v, want first turn plus edited replacement turn", messages)
 	}
 }
 
@@ -401,6 +515,34 @@ func TestSQLiteAppendTurnRejectsInvalidInputWithoutPersisting(t *testing.T) {
 	}
 	if len(messages) != 0 {
 		t.Fatalf("message count after rejected appends = %d, want 0", len(messages))
+	}
+}
+
+func TestSQLiteReplaceTailAndAppendTurnRejectsInvalidKeepCount(t *testing.T) {
+	store := newMigratedTestSQLite(t)
+	ctx := context.Background()
+	user := createTestUser(t, store, "edie")
+	conversation, err := store.DefaultConversationForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DefaultConversationForUser error = %v, want nil", err)
+	}
+	if appendErr := store.AppendTurn(ctx, conversation.ID, llm.NewTextMessage(llm.RoleUser, "first"), llm.NewTextMessage(llm.RoleAssistant, "answer")); appendErr != nil {
+		t.Fatalf("AppendTurn error = %v, want nil", appendErr)
+	}
+
+	for _, keepMessages := range []int{-1, 3} {
+		replaceErr := store.ReplaceTailAndAppendTurn(ctx, conversation.ID, keepMessages, llm.NewTextMessage(llm.RoleUser, "bad"), llm.NewTextMessage(llm.RoleAssistant, "bad answer"))
+		if !errors.Is(replaceErr, ErrInvalidArgument) {
+			t.Fatalf("ReplaceTailAndAppendTurn keep=%d error = %v, want ErrInvalidArgument", keepMessages, replaceErr)
+		}
+	}
+
+	messages, err := store.Messages(ctx, conversation.ID)
+	if err != nil {
+		t.Fatalf("Messages error = %v, want nil", err)
+	}
+	if len(messages) != 2 || messages[0].Text() != "first" || messages[1].Text() != "answer" {
+		t.Fatalf("messages after rejected replacements = %#v, want original turn intact", messages)
 	}
 }
 

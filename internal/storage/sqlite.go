@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 INSERT INTO schema_version (version)
-SELECT 1
+SELECT 0
 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
 
 UPDATE schema_version SET version = 1 WHERE version < 1;
@@ -137,12 +137,20 @@ CREATE TABLE IF NOT EXISTS messages (
 	role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
 	parts_json TEXT NOT NULL,
 	created_at TEXT NOT NULL,
+	completed_at TEXT,
 	UNIQUE (conversation_id, sequence)
 );
 
 CREATE INDEX IF NOT EXISTS messages_conversation_sequence_idx
 	ON messages(conversation_id, sequence);
 `)
+	if err != nil {
+		return err
+	}
+	if migrateErr := s.ensureMessagesCompletedAt(ctx); migrateErr != nil {
+		return migrateErr
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE schema_version SET version = 2 WHERE version < 2;`)
 	return err
 }
 
@@ -370,7 +378,7 @@ func (s *SQLite) Messages(ctx context.Context, conversationID int64) ([]llm.Mess
 		return nil, ErrInvalidArgument
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT role, parts_json
+SELECT role, parts_json, completed_at
 FROM messages
 WHERE conversation_id = ?
 ORDER BY sequence ASC
@@ -384,11 +392,18 @@ ORDER BY sequence ASC
 	for rows.Next() {
 		var message llm.Message
 		var partsJSON string
-		if err := rows.Scan(&message.Role, &partsJSON); err != nil {
-			return nil, err
+		var completedAt sql.NullString
+		if scanErr := rows.Scan(&message.Role, &partsJSON, &completedAt); scanErr != nil {
+			return nil, scanErr
 		}
-		if err := json.Unmarshal([]byte(partsJSON), &message.Parts); err != nil {
-			return nil, err
+		if unmarshalErr := json.Unmarshal([]byte(partsJSON), &message.Parts); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+		if completedAt.Valid && strings.TrimSpace(completedAt.String) != "" {
+			message.CompletedAt, err = parseTime(completedAt.String)
+			if err != nil {
+				return nil, err
+			}
 		}
 		messages = append(messages, message.Clone())
 	}
@@ -402,6 +417,63 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
 		return ErrInvalidArgument
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	var maxSequence int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(sequence), 0)
+FROM messages
+WHERE conversation_id = ?
+`, conversationID).Scan(&maxSequence); err != nil {
+		return err
+	}
+	if err := insertTurnAtSequence(ctx, tx, conversationID, maxSequence+1, userMessage, assistantMessage); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) ReplaceTailAndAppendTurn(ctx context.Context, conversationID int64, keepMessages int, userMessage, assistantMessage llm.Message) error {
+	if conversationID <= 0 || userMessage.Role != llm.RoleUser || assistantMessage.Role != llm.RoleAssistant {
+		return ErrInvalidArgument
+	}
+	if keepMessages < 0 {
+		return ErrInvalidArgument
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	var messageCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM messages
+WHERE conversation_id = ?
+`, conversationID).Scan(&messageCount); err != nil {
+		return err
+	}
+	if keepMessages > messageCount {
+		return ErrInvalidArgument
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM messages
+WHERE conversation_id = ? AND sequence > ?
+`, conversationID, keepMessages); err != nil {
+		return err
+	}
+	if err := insertTurnAtSequence(ctx, tx, conversationID, keepMessages+1, userMessage, assistantMessage); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertTurnAtSequence(ctx context.Context, tx *sql.Tx, conversationID int64, firstSequence int, userMessage, assistantMessage llm.Message) error {
 	userParts, err := json.Marshal(userMessage.Parts)
 	if err != nil {
 		return err
@@ -410,40 +482,60 @@ func (s *SQLite) AppendTurn(ctx context.Context, conversationID int64, userMessa
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	createdAt := formatTime(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, conversationID, firstSequence, userMessage.Role, string(userParts), createdAt, nil); err != nil {
+		if sqliteIsConstraint(err) {
+			return ErrInvalidArgument
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, conversationID, firstSequence+1, assistantMessage.Role, string(assistantParts), createdAt, completedAtValue(assistantMessage.CompletedAt)); err != nil {
+		if sqliteIsConstraint(err) {
+			return ErrInvalidArgument
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLite) ensureMessagesCompletedAt(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rows.Close()
 
-	var maxSequence int64
-	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MAX(sequence), 0)
-FROM messages
-WHERE conversation_id = ?
-`, conversationID).Scan(&maxSequence); err != nil {
-		return err
-	}
-	createdAt := formatTime(time.Now().UTC())
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at)
-VALUES (?, ?, ?, ?, ?)
-`, conversationID, maxSequence+1, userMessage.Role, string(userParts), createdAt); err != nil {
-		if sqliteIsConstraint(err) {
-			return ErrInvalidArgument
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if scanErr := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); scanErr != nil {
+			return scanErr
 		}
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages (conversation_id, sequence, role, parts_json, created_at)
-VALUES (?, ?, ?, ?, ?)
-`, conversationID, maxSequence+2, assistantMessage.Role, string(assistantParts), createdAt); err != nil {
-		if sqliteIsConstraint(err) {
-			return ErrInvalidArgument
+		if name == "completed_at" {
+			return rows.Err()
 		}
-		return err
 	}
-	return tx.Commit()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return rowsErr
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN completed_at TEXT`)
+	return err
+}
+
+func completedAtValue(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return formatTime(t.UTC())
 }
 
 type sqlExecer interface {

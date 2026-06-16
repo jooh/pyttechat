@@ -84,12 +84,40 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 		`gpt-example`,
 		`class="chat-panel"`,
 		`id="scroll-bottom"`,
+		`title="Scroll to latest message"`,
 		`id="composer-status"`,
+		`<p id="composer-status" class="composer-status" aria-live="polite"></p>`,
+		`id="revert-button"`,
+		`title="Revert prompt changes"`,
+		`id="previous-button"`,
+		`title="Previous prompt"`,
+		`id="next-button"`,
+		`title="Next prompt"`,
+		`id="ffwd-button"`,
+		`title="Latest prompt"`,
+		`id="composer-action"`,
+		`title="Send message"`,
+		`data-action-state="send"`,
+		`data-action-icon="play"`,
+		`data-action-icon="stop"`,
+		`id="composer-end-target"`,
+		`class="message message-user message-end-target"`,
+		`data-composer-end-target`,
+		`data-end-prompt="true"`,
+		`data-editable-prompt="true"`,
+		`data-editing="true"`,
+		`data-active-prompt="true"`,
+		`<div class="message-text message-plain"><span class="sr-only">Latest prompt</span></div>`,
+		`<div class="message-edit-slot">`,
+		`aria-label="Revert prompt changes"`,
+		`aria-label="Previous prompt"`,
+		`aria-label="Next prompt"`,
+		`aria-label="Latest prompt"`,
 		`aria-label="Send message"`,
-		`aria-label="Stop response"`,
 		`id="theme-toggle"`,
 		`data-theme-toggle`,
 		`aria-label="Current theme: system preference"`,
+		`title="Switch theme"`,
 		`data-theme-icon="light"`,
 		`data-theme-icon="dark"`,
 		`<circle cx="12" cy="12" r="4"></circle>`,
@@ -97,6 +125,16 @@ func TestRootRendersChatPageAndSetsSessionCookie(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want rendered shell substring %q", body, want)
+		}
+	}
+	for _, unwanted := range []string{
+		`id="undo-button"`,
+		`id="redo-button"`,
+		`Undo prompt edit`,
+		`Redo prompt edit`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("GET / body = %q, did not expect removed prompt history control %q", body, unwanted)
 		}
 	}
 
@@ -657,6 +695,9 @@ func TestAuthRegisterLoginLogoutAndCSRF(t *testing.T) {
 	if rootCSRF == "" || !strings.Contains(body, "hello") || !strings.Contains(body, "answer") {
 		t.Fatalf("GET / after login body = %q, want persisted history and csrf", body)
 	}
+	if !strings.Contains(body, `aria-label="Sign out" title="Sign out"`) {
+		t.Fatalf("GET / after login body = %q, want sign out tooltip", body)
+	}
 }
 
 func TestAuthPerUserHistoryIsolationAndPersistedReload(t *testing.T) {
@@ -776,6 +817,60 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`status-sweep`,
 		`@keyframes status-sweep`,
 		`.message-status`,
+		`.message-edit-slot`,
+		`.message-assistant:hover .message-actions`,
+		`pointer-events: none;`,
+		`padding-right: 2.75rem;`,
+		`.action-button`,
+		`.history-button`,
+		`.message-end-target`,
+		`.message-end-target:focus-visible`,
+		`.message-end-target > .message-text`,
+		`min-height: 1.5em;`,
+		`min-height: 1lh;`,
+		`--shell-inline-padding: clamp(0.75rem, 2vw, 1.5rem);`,
+		`--shell-max-width: 1080px;`,
+		`padding: 0 var(--shell-inline-padding);`,
+		`.chat-panel`,
+		`width: 100vw;`,
+		`margin: 0 calc(50% - 50vw);`,
+		`--message-role-offset: clamp(0.375rem, 2vw, 1.5rem);`,
+		`--messages-inline-padding: max(`,
+		`padding: 0 var(--messages-inline-padding);`,
+		`width: calc(100% - var(--message-role-offset));`,
+		`align-self: flex-end;`,
+		`align-self: flex-start;`,
+		`0 0 18px`,
+		`0 0 0 var(--pico-outline-width) var(--pico-primary-focus)`,
+		`0 8px 24px`,
+		`0 2px 8px`,
+		`.message-user[data-editing="true"]`,
+		`.message-user[data-active-prompt="true"]`,
+		`position: sticky;`,
+		`top: 0;`,
+		`bottom: 0;`,
+		`--message-user-block-padding: 0.875rem;`,
+		`--message-user-inline-padding: 1rem;`,
+		`padding: var(--message-user-block-padding) var(--message-user-inline-padding);`,
+		`--prompt-control-reserve: 2.65rem;`,
+		`padding-bottom: calc(var(--message-user-block-padding) + var(--prompt-control-reserve));`,
+		`.message[data-after-active-prompt="true"]`,
+		`.messages[data-dirty-prompt="true"] .message[data-after-active-prompt="true"]`,
+		`opacity: 0.56;`,
+		`--icon-button-inverse-color:`,
+		`--icon-button-inverse-hover-color:`,
+		`.message-user .composer-box`,
+		`display: contents;`,
+		`border: 0;`,
+		`.message-user .composer textarea`,
+		`max-height: none;`,
+		`font: inherit;`,
+		`.message-user .composer-controls`,
+		`right: var(--message-user-inline-padding);`,
+		`bottom: var(--message-user-block-padding);`,
+		`left: var(--message-user-inline-padding);`,
+		`justify-content: flex-end;`,
+		`.composer-status:empty`,
 		`animation: status-sweep 2.2s`,
 		`--status-sweep-low: rgb(32 32 32);`,
 		`min-height: 2.1rem;`,
@@ -787,6 +882,18 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 	for _, unwanted := range []string{
 		`@keyframes blink`,
 		`message-text:empty::after`,
+		`min-height: 1.75rem;`,
+		`.message-user .message-action`,
+		`.message-user .message-actions`,
+		`.dirty-dialog`,
+		`.composer-end-target`,
+		`.composer-dock`,
+		`.messages[data-end-active="true"]`,
+		`--composer-dock-reserve`,
+		`.messages[data-dirty-prompt="true"] .message-end-target`,
+		`padding: 0.25rem 0.75rem;`,
+		`top: 0.0625rem;`,
+		`bottom: 0.0625rem;`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("app CSS = %q, did not expect removed streaming cursor style %q", body, unwanted)
@@ -826,13 +933,102 @@ func TestAssetsRouteAndDefaultNotFound(t *testing.T) {
 		`const nearBottomThreshold = 32;`,
 		`const wasNearBottom = isNearBottom();`,
 		`scrollToBottom(false, wasNearBottom);`,
+		`forceScrollToBottom`,
+		`delete composerEndTarget.dataset.activePrompt;`,
+		`composerEndTarget.dataset.activePrompt = wasEndActive;`,
+		`function navigationDirection(targetIndex)`,
+		`scrollComposerIntoView(targetIndex, direction, force)`,
+		`bottomScrollTop()`,
+		`messageGap()`,
+		`targetScrollBounds(target)`,
+		`targetVisualBounds(target)`,
+		`target.dataset.activePrompt === 'true'`,
+		`const visualBounds = targetVisualBounds(target);`,
+		`visualBounds.top >= visibleTop`,
+		`visualBounds.bottom <= visibleBottom`,
+		`targetBounds.top - topInset`,
+		`targetBounds.bottom - messages.clientHeight + bottomInset`,
+		`visualBounds.top < visibleTop`,
+		`visualBounds.bottom > visibleBottom`,
+		`clampedScrollTop(nextScrollTop)`,
+		`messages.scrollTo({`,
+		`preferredScrollBehavior(force)`,
+		`focusEndPromptOnLoad`,
+		`window.setTimeout(alignEndPrompt, 100);`,
+		`window.addEventListener('load', alignEndPrompt, { once: true });`,
+		`scrollComposerIntoView(null, 'down', true);`,
+		`scrollComposerIntoView(index, 'nearest', false);`,
+		`replace_from`,
+		`markTurnStopped`,
+		`requestNavigation`,
+		`updatePromptHistoryState`,
+		`data.activePrompt = 'true'`,
+		`data.afterActivePrompt = 'true'`,
+		`messageData.dirtyPrompt = 'true'`,
+		`composerEndTarget.dataset.activePrompt = 'true'`,
+		`composerEndTarget.dataset.editing = 'true'`,
+		`composerEndTarget.dataset.afterActivePrompt = 'true'`,
+		`editSlotFor(composerEndTarget).append(form)`,
+		`createPromptEditSlot`,
+		`article.append(createPromptEditSlot())`,
+		`prompt.closest('.message-user')`,
+		`prompt.style.overflowY = 'hidden';`,
+		`document.activeElement.blur();`,
+		`revertButton`,
+		`previousButton`,
+		`nextButton`,
+		`ffwdButton`,
+		`requestNavigation(null, 'end')`,
+		`requestNavigation(next ? messageIndex(next) : null, 'start')`,
+		`nextButton.disabled = busy || dirtySelectedPrompt || currentEditIndex === null`,
+		`handleEditablePromptClick`,
+		`requestNavigation(index, 'end')`,
+		`canRevertPromptChanges`,
+		`revertPromptChanges`,
+		`canSelectPrompt`,
+		`assistantOutputStarted`,
+		`completeThinkingStatus(assistant.article);`,
+		`ArrowUp`,
+		`ArrowDown`,
+		`data-action-icon`,
+		`toggleAttribute('hidden'`,
+		`Stop response`,
+		`Stopping response`,
+		`focusPromptNow('end', false)`,
+		`focusPrompt('end')`,
+		`preventScroll: preventScroll !== false`,
+		`composerEndTarget.addEventListener('keydown'`,
+		`createMessageActions(role)`,
+		`role !== 'assistant'`,
+		`copy.title = 'Copy message'`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("app JS = %q, want streaming UI behavior %q", body, want)
 		}
 	}
-	if strings.Contains(body, `prompt.focus()`) {
-		t.Fatalf("app JS = %q, did not expect turn completion to focus composer", body)
+	for _, unwanted := range []string{
+		`Generating response`,
+		`Response complete`,
+		`Response stopped`,
+		`Resume response`,
+		`resumeTurn`,
+		`/resume`,
+		`article.append(createThinkingStatus());`,
+		`dirtyDialog`,
+		`showModal`,
+		`window.confirm`,
+		`handleHistoryShortcut`,
+		`isUndoShortcut`,
+		`isRedoShortcut`,
+		`recordPromptHistory`,
+		`applyPromptHistoryStep`,
+		`canUndoPromptEdit`,
+		`canRedoPromptEdit`,
+		`scrollIntoView`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("app JS = %q, did not expect redundant composer status %q", body, unwanted)
+		}
 	}
 
 	response, body = get(t, client, server.URL+"/assets/theme-init.js")
@@ -1099,6 +1295,33 @@ func TestCreateTurnRejectsConcurrentTurn(t *testing.T) {
 	}
 }
 
+func TestCreateTurnRejectsInvalidReplaceFrom(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"answer"}})}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "first")
+	response, body := get(t, client, server.URL+turn.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	for _, replaceFrom := range []int{-1, 1, 3} {
+		request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns", map[string]any{
+			"prompt":       "replacement",
+			"replace_from": replaceFrom,
+		})
+		request.Header.Set(csrfHeaderName, csrfToken)
+		response, body := do(t, client, request)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("replace_from=%d status = %d, want 400; body = %q", replaceFrom, response.StatusCode, body)
+		}
+	}
+}
+
 func TestCreateTurnStartsJobAndStreamsReplayableEvents(t *testing.T) {
 	completedAt := time.Date(2026, 5, 25, 12, 34, 56, 0, time.UTC)
 	withTimeNow(t, func() time.Time { return completedAt })
@@ -1323,6 +1546,88 @@ func TestAbortCancelsTurnJobAndStreamsAbortedEvent(t *testing.T) {
 	}
 }
 
+func TestAbortedTurnPersistsPartialOutputForFollowUp(t *testing.T) {
+	llmClient := newControlledClient()
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+	turn := createTurn(t, client, server.URL, csrfToken, "hello")
+	_ = llmClient.waitForContext(t)
+
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+turn.StreamURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest events error = %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET events error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events status = %d, want 200; body = %q", response.StatusCode, raw)
+	}
+
+	select {
+	case llmClient.events <- llm.Event{Type: llm.EventTextDelta, Delta: "partial"}:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out sending partial event")
+	}
+	reader := bufio.NewReader(response.Body)
+	frame := readSSEFrame(t, reader)
+	if frame.Event != "preview" || !strings.Contains(string(frame.Data), "partial") {
+		t.Fatalf("first frame = %#v, want partial preview", frame)
+	}
+
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+turn.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	abortResponse, abortBody := do(t, client, request)
+	defer abortResponse.Body.Close()
+	if abortResponse.StatusCode != http.StatusOK {
+		t.Fatalf("abort status = %d, want 200; body = %q", abortResponse.StatusCode, abortBody)
+	}
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll remaining events error = %v", err)
+	}
+	if !hasFrame(parseSSE(t, string(remaining)), "aborted", `"turn_id":"`+turn.TurnID+`"`) {
+		t.Fatalf("remaining SSE body = %q, want aborted event", remaining)
+	}
+
+	next := createTurn(t, client, server.URL, csrfToken, "follow up")
+	_ = llmClient.waitForContext(t)
+	request = newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/"+next.TurnID+"/abort", nil)
+	request.Header.Set(csrfHeaderName, csrfToken)
+	cleanupResponse, cleanupBody := do(t, client, request)
+	defer cleanupResponse.Body.Close()
+	if cleanupResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cleanup abort status = %d, want 200; body = %q", cleanupResponse.StatusCode, cleanupBody)
+	}
+
+	requests := llmClient.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if got := requests[1].Messages; len(got) != 3 || got[0].Text() != "hello" || got[1].Text() != "partial" || got[2].Text() != "follow up" {
+		t.Fatalf("follow-up request messages = %#v, want stopped partial turn in context", requests[1].Messages)
+	}
+}
+
+func TestResumeRouteIsNotSupported(t *testing.T) {
+	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	request := newJSONRequest(t, http.MethodPost, server.URL+"/chat/turns/turn_missing/resume", nil)
+	response, body := do(t, client, request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST resume status = %d, want 404; body = %q", response.StatusCode, body)
+	}
+}
+
 func TestAbortRequiresCSRFAndRejectsFinishedTurn(t *testing.T) {
 	server := httptest.NewServer(NewServer(Options{Client: dummy.NewClient()}))
 	defer server.Close()
@@ -1514,7 +1819,49 @@ func TestCompletedTurnsUseSameChatSessionForFollowUp(t *testing.T) {
 	}
 }
 
+func TestReplaceFromTruncatesConversationContextForFollowUp(t *testing.T) {
+	llmClient := &recordingClient{}
+	server := httptest.NewServer(NewServer(Options{Client: llmClient}))
+	defer server.Close()
+
+	client := testHTTPClient(t)
+	csrfToken := fetchCSRFToken(t, client, server.URL)
+
+	first := createTurn(t, client, server.URL, csrfToken, "first")
+	response, body := get(t, client, server.URL+first.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("first events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+	second := createTurn(t, client, server.URL, csrfToken, "second")
+	response, body = get(t, client, server.URL+second.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("second events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	replacement := createTurnWithPayload(t, client, server.URL, csrfToken, map[string]any{
+		"prompt":       "edited second",
+		"replace_from": 2,
+	})
+	response, body = get(t, client, server.URL+replacement.StreamURL)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("replacement events status = %d, want 200; body = %q", response.StatusCode, body)
+	}
+
+	requests := llmClient.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	if got := requests[2].Messages; len(got) != 3 || got[0].Text() != "first" || got[1].Text() != "answer 1" || got[2].Text() != "edited second" {
+		t.Fatalf("replacement request messages = %#v, want first turn plus edited prompt", requests[2].Messages)
+	}
+}
+
 func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
+	completedAt := time.Date(2026, 6, 14, 20, 16, 13, 0, time.UTC)
+	withTimeNow(t, func() time.Time { return completedAt })
 	server := httptest.NewServer(NewServer(Options{
 		Client: dummy.NewClient(dummy.Turn{TextChunks: []string{"**answer**"}}),
 		Model:  "gpt-actions",
@@ -1550,11 +1897,33 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 	for _, want := range []string{
 		`class="message-actions"`,
 		`data-copy-message`,
+		`data-message-index="0"`,
+		`data-editable-prompt="true"`,
+		`class="message-edit-slot"`,
 		`aria-label="Copy message"`,
+		`title="Copy message"`,
+		`class="message-completed-at"`,
+		`datetime="` + completedAt.Format(time.RFC3339) + `"`,
+		`Completed`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET / body = %q, want completed message affordance %q", body, want)
 		}
+	}
+	if count := strings.Count(body, `data-copy-message`); count != 1 {
+		t.Fatalf("GET / body contains %d copy buttons, want assistant-only copy button; body = %q", count, body)
+	}
+	userIndex := strings.Index(body, `message-user`)
+	assistantIndex := strings.Index(body, `message-assistant`)
+	copyIndex := strings.Index(body, `data-copy-message`)
+	if userIndex < 0 || assistantIndex <= userIndex || copyIndex < assistantIndex {
+		t.Fatalf("GET / body = %q, want copy button associated with assistant message only", body)
+	}
+	if strings.Contains(body[userIndex:assistantIndex], `data-copy-message`) {
+		t.Fatalf("GET / body = %q, did not expect copy button in user message", body)
+	}
+	if !strings.Contains(body[userIndex:assistantIndex], `class="message-edit-slot"`) {
+		t.Fatalf("GET / body = %q, want rendered user prompt to reserve the shared edit slot", body)
 	}
 	for _, unwanted := range []string{
 		`class="message-header"`,
@@ -1565,6 +1934,37 @@ func TestIndexRendersCompletedMessagesAndReusesSessionCookie(t *testing.T) {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("GET / body = %q, did not expect per-message chrome %q", body, unwanted)
 		}
+	}
+}
+
+func TestIndexKeepsNextMessageIndexForHiddenEmptyAssistant(t *testing.T) {
+	handler := NewServer(Options{Client: dummy.NewClient()})
+	chatSession := chat.NewService(dummy.NewClient()).NewSession()
+	if err := chatSession.CommitStopped(context.Background(), "stopped", chat.SendOptions{}); err != nil {
+		t.Fatalf("CommitStopped error = %v, want nil", err)
+	}
+	handler.sessions["sess_test"] = &browserSession{
+		id:    "sess_test",
+		csrf:  "csrf_test",
+		chat:  chatSession,
+		turns: map[string]*turnJob{},
+	}
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "sess_test"})
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body = %q", recorder.Code, body)
+	}
+	if !strings.Contains(body, `data-next-message-index="2"`) {
+		t.Fatalf("GET / body = %q, want next message index to include hidden empty assistant", body)
+	}
+	if !strings.Contains(body, `data-message-index="0"`) || strings.Contains(body, `data-message-index="1"`) {
+		t.Fatalf("GET / body = %q, want only visible user message indexed while preserving next index", body)
 	}
 }
 
@@ -2251,6 +2651,16 @@ func TestTurnJobEmitsStreamErrorsAndIgnoresNilEventErrors(t *testing.T) {
 	})
 }
 
+func TestTurnJobEmitErrorMapsCancellationToAborted(t *testing.T) {
+	turn := newTestTurnJob(t)
+	turn.emitError(context.Canceled)
+
+	replay, _, terminal := turn.subscribe(0)
+	if !terminal || !hasReplayEvent(replay, "aborted") || hasReplayEvent(replay, "stream-error") {
+		t.Fatalf("replay = %#v terminal=%v, want aborted without stream-error", replay, terminal)
+	}
+}
+
 func TestTurnJobIgnoresEmptyTextDeltas(t *testing.T) {
 	turn := newTestTurnJob(t)
 	session := chat.NewService(webSequenceClient{events: []llm.Event{
@@ -2511,9 +2921,15 @@ func fetchCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
 func createTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt string) turnResponse {
 	t.Helper()
 
-	request := newJSONRequest(t, http.MethodPost, baseURL+"/chat/turns", map[string]string{
+	return createTurnWithPayload(t, client, baseURL, csrfToken, map[string]any{
 		"prompt": prompt,
 	})
+}
+
+func createTurnWithPayload(t *testing.T, client *http.Client, baseURL, csrfToken string, payload map[string]any) turnResponse {
+	t.Helper()
+
+	request := newJSONRequest(t, http.MethodPost, baseURL+"/chat/turns", payload)
 	request.Header.Set(csrfHeaderName, csrfToken)
 	response, body := do(t, client, request)
 	defer response.Body.Close()
@@ -2521,14 +2937,14 @@ func createTurn(t *testing.T, client *http.Client, baseURL, csrfToken, prompt st
 		t.Fatalf("POST /chat/turns status = %d, want 201; body = %q", response.StatusCode, body)
 	}
 
-	var payload turnResponse
-	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+	var turn turnResponse
+	if err := json.Unmarshal([]byte(body), &turn); err != nil {
 		t.Fatalf("decode turn response error = %v; body = %q", err, body)
 	}
-	if payload.TurnID == "" || payload.UserMessageID == "" || payload.AssistantMessageID == "" || payload.StreamURL == "" {
-		t.Fatalf("turn response = %#v, want stable ids and stream URL", payload)
+	if turn.TurnID == "" || turn.UserMessageID == "" || turn.AssistantMessageID == "" || turn.StreamURL == "" {
+		t.Fatalf("turn response = %#v, want stable ids and stream URL", turn)
 	}
-	return payload
+	return turn
 }
 
 func newJSONRequest(t *testing.T, method, url string, payload any) *http.Request {
@@ -2805,8 +3221,10 @@ func readSSEFrame(t *testing.T, reader *bufio.Reader) sseFrame {
 }
 
 type controlledClient struct {
-	events chan llm.Event
-	ctx    chan context.Context
+	mu       sync.Mutex
+	events   chan llm.Event
+	ctx      chan context.Context
+	requests []llm.Request
 }
 
 func newControlledClient() *controlledClient {
@@ -2816,9 +3234,23 @@ func newControlledClient() *controlledClient {
 	}
 }
 
-func (c *controlledClient) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+func (c *controlledClient) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, request.Clone())
+	c.mu.Unlock()
 	c.ctx <- ctx
 	return &controlledStream{ctx: ctx, events: c.events}, nil
+}
+
+func (c *controlledClient) Requests() []llm.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	requests := make([]llm.Request, len(c.requests))
+	for i, request := range c.requests {
+		requests[i] = request.Clone()
+	}
+	return requests
 }
 
 func (c *controlledClient) waitForContext(t *testing.T) context.Context {
