@@ -3214,44 +3214,6 @@ func readSSEFrame(t *testing.T, reader *bufio.Reader) sseFrame {
 	return frames[0]
 }
 
-func mustReadAllString(t *testing.T, reader io.Reader) string {
-	t.Helper()
-
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("ReadAll error = %v, want nil", err)
-	}
-	return string(body)
-}
-
-func drainChatTurnStream(t *testing.T, stream *chat.TurnStream) {
-	t.Helper()
-	defer stream.Close()
-
-	for {
-		_, err := stream.Next()
-		if errors.Is(err, io.EOF) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("Next() error = %v, want nil", err)
-		}
-	}
-}
-
-func assertReplayEvents(t *testing.T, replay []streamEvent, names []string) {
-	t.Helper()
-
-	if len(replay) != len(names) {
-		t.Fatalf("replay event count = %d, want %d: %#v", len(replay), len(names), replay)
-	}
-	for i, name := range names {
-		if replay[i].Name != name {
-			t.Fatalf("replay[%d] = %q, want %q; replay = %#v", i, replay[i].Name, name, replay)
-		}
-	}
-}
-
 type controlledClient struct {
 	mu       sync.Mutex
 	events   chan llm.Event

@@ -147,8 +147,8 @@ CREATE INDEX IF NOT EXISTS messages_conversation_sequence_idx
 	if err != nil {
 		return err
 	}
-	if err := s.ensureMessagesCompletedAt(ctx); err != nil {
-		return err
+	if migrateErr := s.ensureMessagesCompletedAt(ctx); migrateErr != nil {
+		return migrateErr
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE schema_version SET version = 2 WHERE version < 2;`)
 	return err
@@ -393,11 +393,11 @@ ORDER BY sequence ASC
 		var message llm.Message
 		var partsJSON string
 		var completedAt sql.NullString
-		if err := rows.Scan(&message.Role, &partsJSON, &completedAt); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&message.Role, &partsJSON, &completedAt); scanErr != nil {
+			return nil, scanErr
 		}
-		if err := json.Unmarshal([]byte(partsJSON), &message.Parts); err != nil {
-			return nil, err
+		if unmarshalErr := json.Unmarshal([]byte(partsJSON), &message.Parts); unmarshalErr != nil {
+			return nil, unmarshalErr
 		}
 		if completedAt.Valid && strings.TrimSpace(completedAt.String) != "" {
 			message.CompletedAt, err = parseTime(completedAt.String)
@@ -517,15 +517,15 @@ func (s *SQLite) ensureMessagesCompletedAt(ctx context.Context) error {
 		var notNull int
 		var defaultValue any
 		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return err
+		if scanErr := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); scanErr != nil {
+			return scanErr
 		}
 		if name == "completed_at" {
 			return rows.Err()
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return rowsErr
 	}
 	_, err = s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN completed_at TEXT`)
 	return err
