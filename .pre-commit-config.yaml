@@ -11,6 +11,16 @@ repos:
         entry: make tidy-check
         language: system
         pass_filenames: false
+      - id: mod-verify
+        name: Go module cache verification
+        entry: make mod-verify
+        language: system
+        pass_filenames: false
+      - id: modernize-check
+        name: Go modernizer check
+        entry: make modernize-check
+        language: system
+        pass_filenames: false
       - id: lint-fast
         name: fast Go lint
         entry: make lint-fast

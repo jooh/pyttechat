@@ -138,6 +138,34 @@ curl -N http://localhost:8080/v1/responses \
 
 Expected: an SSE stream with typed response lifecycle events, text deltas, `response.completed`, and final `data: [DONE]`.
 
+## Agentic Go Tooling
+
+Install the repository's pinned Go tools after cloning:
+
+```sh
+make tools
+```
+
+This includes `gopls`, which the trusted project configuration exposes to Codex as a non-required, approval-gated MCP server. Restart Codex after installing the tools, then use `codex mcp list` to confirm that `gopls` is available. The detached server sees saved files only; compiler and test results remain the source of truth.
+
+Use the Go 1.26 modernizers and module-integrity checks directly when iterating:
+
+```sh
+make modernize-check
+make mod-verify
+```
+
+Review the proposed modernization diff before applying it with `make modernize`.
+
+Native fuzz targets cover untrusted Markdown rendering, streamed Markdown chunking, and OpenResponses SSE parsing. Run each target for 30 seconds by default, or choose a duration per target:
+
+```sh
+make fuzz
+make fuzz FUZZ_TIME=10s
+```
+
+Regular unit tests run each fuzz seed deterministically. A separate scheduled workflow performs open-ended input generation without making pull-request checks nondeterministic.
+
 ## Pre-Commit
 
 Install the hooks after cloning:
@@ -152,7 +180,7 @@ Run the same hooks manually:
 make pre-commit
 ```
 
-The pre-commit checks are intentionally fast: formatting, module tidiness, fast linting, and unit tests.
+The pre-commit checks are intentionally fast: formatting, module tidiness and integrity, modernization, fast linting, and unit tests.
 
 ## Local CI
 
@@ -168,7 +196,7 @@ Run the broader PR-quality checks locally:
 make ci
 ```
 
-The Makefile installs pinned Go tools into `.bin/` when needed.
+The Makefile installs pinned Go tools into `.bin/` when needed. `make all-tests` also rejects pending `go fix` modernizations and modified module-cache contents.
 
 `make coverage` enforces 95.0% Go statement coverage. Container-level smoke coverage is kept separate from `all-tests`/`ci` because it requires Docker:
 
@@ -176,7 +204,7 @@ The Makefile installs pinned Go tools into `.bin/` when needed.
 make container-smoke
 ```
 
-The CI workflow in `.github/workflows/ci.yml` runs `make ci`, and the smoke workflow in `.github/workflows/smoke.yml` runs container smoke as its own CI job.
+The CI workflow in `.github/workflows/ci.yml` runs `make ci`, the smoke workflow in `.github/workflows/smoke.yml` runs container smoke as its own CI job, and `.github/workflows/fuzz.yml` performs weekly and manually dispatched native fuzzing.
 
 ## Reference Skills
 

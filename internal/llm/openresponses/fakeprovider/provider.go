@@ -473,10 +473,7 @@ func chunkText(text string) []string {
 	}
 	chunks := make([]string, 0, (len(runes)+chunkRunes-1)/chunkRunes)
 	for start := 0; start < len(runes); start += chunkRunes {
-		end := start + chunkRunes
-		if end > len(runes) {
-			end = len(runes)
-		}
+		end := min(start+chunkRunes, len(runes))
 		chunks = append(chunks, string(runes[start:end]))
 	}
 	return chunks

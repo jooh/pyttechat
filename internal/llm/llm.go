@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -63,13 +64,13 @@ func NewTextMessage(role Role, text string) Message {
 }
 
 func (m Message) Text() string {
-	var text string
+	var text strings.Builder
 	for _, part := range m.Parts {
 		if part.Type == PartText {
-			text += part.Text
+			text.WriteString(part.Text)
 		}
 	}
-	return text
+	return text.String()
 }
 
 func (m Message) Clone() Message {

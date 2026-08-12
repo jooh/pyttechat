@@ -16,7 +16,7 @@ import (
 func TestSQLiteMigrateIsIdempotent(t *testing.T) {
 	store := newTestSQLite(t)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := store.Migrate(context.Background()); err != nil {
 			t.Fatalf("Migrate #%d error = %v, want nil", i+1, err)
 		}

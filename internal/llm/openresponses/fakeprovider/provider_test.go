@@ -190,7 +190,7 @@ func TestStreamingEventsHaveMatchingTypesAndIncreasingSequenceNumbers(t *testing
 func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 	frames := parseSSE(t, streamResponse(t, `{"input":"hello 🌍","stream":true}`))
 
-	var deltaText string
+	var deltaText strings.Builder
 	var textDone string
 	var partDoneText string
 	var itemDoneText string
@@ -199,7 +199,7 @@ func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 	for _, frame := range frames {
 		switch frame.Event {
 		case "response.output_text.delta":
-			deltaText += stringField(frame.Payload, "delta")
+			deltaText.WriteString(stringField(frame.Payload, "delta"))
 		case "response.output_text.done":
 			textDone = stringField(frame.Payload, "text")
 		case "response.content_part.done":
@@ -216,7 +216,7 @@ func TestStreamingTextDoneFieldsMatchCompletedOutputText(t *testing.T) {
 	}
 
 	for name, got := range map[string]string{
-		"delta text":        deltaText,
+		"delta text":        deltaText.String(),
 		"output_text.done":  textDone,
 		"content_part.done": partDoneText,
 		"output_item.done":  itemDoneText,
@@ -560,7 +560,7 @@ func parseSSE(t *testing.T, body []byte) []sseFrame {
 			continue
 		}
 		var frame sseFrame
-		for _, line := range strings.Split(raw, "\n") {
+		for line := range strings.SplitSeq(raw, "\n") {
 			switch {
 			case strings.HasPrefix(line, "event: "):
 				frame.Event = strings.TrimPrefix(line, "event: ")
@@ -590,14 +590,14 @@ func stringField(payload map[string]any, name string) string {
 
 func outputItemText(item map[string]any) string {
 	content, _ := item["content"].([]any)
-	var text string
+	var text strings.Builder
 	for _, value := range content {
 		part, _ := value.(map[string]any)
 		if part["type"] == "output_text" {
-			text += stringField(part, "text")
+			text.WriteString(stringField(part, "text"))
 		}
 	}
-	return text
+	return text.String()
 }
 
 func requireSlice(t *testing.T, value any, name string) []any {

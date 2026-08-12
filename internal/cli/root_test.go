@@ -1480,10 +1480,10 @@ func servedSSEData(t *testing.T, body, eventName string) []string {
 	t.Helper()
 
 	var matches []string
-	for _, raw := range strings.Split(strings.TrimSpace(body), "\n\n") {
+	for raw := range strings.SplitSeq(strings.TrimSpace(body), "\n\n") {
 		var event string
 		var data strings.Builder
-		for _, line := range strings.Split(raw, "\n") {
+		for line := range strings.SplitSeq(raw, "\n") {
 			switch {
 			case strings.HasPrefix(line, "event: "):
 				event = strings.TrimPrefix(line, "event: ")

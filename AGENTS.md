@@ -63,6 +63,14 @@ Reference repositories live under `.agent/skills/references/*/repo` as skill-bac
 - Keep generated artifacts, coverage files, binaries, local tools, and temporary files out of Git.
 - Preserve clear package boundaries. Avoid adding abstractions before there is concrete duplication or complexity to remove.
 
+## Go Agent Workflow
+
+- Run `make tools` after cloning so the pinned Go development tools, including `gopls`, are available under `.bin/`.
+- Prefer the project-scoped `gopls` MCP server for semantic navigation, references, diagnostics, and refactors. It runs in detached mode and sees saved files only.
+- Treat `gopls`, compiler, and modernizer output as evidence to review, not as a substitute for tests or architectural judgment.
+- Run `make modernize-check` after Go changes. If it reports a useful change, inspect the diff before running `make modernize`.
+- During development, run the narrowest relevant Go test first. Before committing, format with `gofmt` and `goimports` and run `make all-tests`.
+
 ## Testing Standards
 
 - Use red/green TDD for all core functionality
