@@ -73,18 +73,18 @@ func TestClientStreamsFromFakeProvider(t *testing.T) {
 	}
 
 	events := drainEvents(t, stream)
-	var text string
+	var text strings.Builder
 	var completed llm.Event
 	for _, event := range events {
 		switch event.Type {
 		case llm.EventTextDelta:
-			text += event.Delta
+			text.WriteString(event.Delta)
 		case llm.EventCompleted:
 			completed = event
 		}
 	}
-	if text != "Echo: hello" {
-		t.Fatalf("streamed text = %q, want fake provider echo", text)
+	if text.String() != "Echo: hello" {
+		t.Fatalf("streamed text = %q, want fake provider echo", text.String())
 	}
 	if completed.ResponseID == "" {
 		t.Fatalf("completed response id is empty")
@@ -498,14 +498,14 @@ func TestClientDoesNotDuplicateFinalTextAfterDeltas(t *testing.T) {
 	}
 
 	events := drainEvents(t, stream)
-	var text string
+	var text strings.Builder
 	for _, event := range events {
 		if event.Type == llm.EventTextDelta {
-			text += event.Delta
+			text.WriteString(event.Delta)
 		}
 	}
-	if text != "Hello" {
-		t.Fatalf("streamed text = %q, want exactly one final answer", text)
+	if text.String() != "Hello" {
+		t.Fatalf("streamed text = %q, want exactly one final answer", text.String())
 	}
 }
 
@@ -527,14 +527,14 @@ func TestClientSkipsSeenAndInvalidMessageOutputItemContent(t *testing.T) {
 	}
 
 	events := drainEvents(t, stream)
-	var text string
+	var text strings.Builder
 	for _, event := range events {
 		if event.Type == llm.EventTextDelta {
-			text += event.Delta
+			text.WriteString(event.Delta)
 		}
 	}
-	if text != "Hello!" {
-		t.Fatalf("streamed text = %q, want deduplicated fallback text", text)
+	if text.String() != "Hello!" {
+		t.Fatalf("streamed text = %q, want deduplicated fallback text", text.String())
 	}
 }
 

@@ -1,12 +1,14 @@
 # Quality Gates
 
-The current scaffold has a tiny deterministic unit test and local build/test tooling. Future application work should expand coverage before adding production behavior.
+The repository uses deterministic commit gates, broader security checks, container smoke coverage, and separately scheduled native fuzzing.
 
 ## Current Checks
 
 - `make fmt-check`
 - `make imports-check`
 - `make tidy-check`
+- `make mod-verify` downloads the module graph and verifies cached contents against recorded checksums.
+- `make modernize-check` fails when Go's modernizers would change source files.
 - `make vet`
 - `make lint-fast`
 - `make test`
@@ -29,6 +31,14 @@ Smoke/integration coverage is intentionally separate from the normal Go quality 
 - `.github/workflows/smoke.yml`
 
 The smoke workflow builds the container image, starts the fake Responses API, registers a browser user through the server-rendered app, submits a chat turn, consumes the SSE stream, and verifies conversation persistence across a container restart.
+
+Coverage-guided fuzzing is also separate so pull-request checks remain deterministic:
+
+- `make fuzz` runs each target for `FUZZ_TIME`, defaulting to 30 seconds per target.
+- `.github/workflows/fuzz.yml` runs weekly and on manual dispatch with one minute per target.
+- Fuzz targets cover Markdown rendering and sanitization, streaming chunk boundaries, and upstream OpenResponses SSE parsing.
+
+Every fuzz seed still runs during ordinary `go test`. If fuzzing finds a failure, fix the behavior and retain the minimized input under the generated `testdata/fuzz` corpus as a deterministic regression.
 
 `make deadcode` is advisory during the scaffold phase because placeholder code can produce noisy findings. It should become strict once the app has a stable shape.
 

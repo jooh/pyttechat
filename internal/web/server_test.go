@@ -1467,7 +1467,7 @@ func TestTurnJobDisconnectsSlowSubscriberWithoutLosingReplay(t *testing.T) {
 		t.Fatalf("new turn is terminal")
 	}
 
-	for i := 0; i < 130; i++ {
+	for i := range 130 {
 		turn.emit("preview", htmlEvent{
 			TurnID:             turn.id,
 			AssistantMessageID: turn.assistantMessageID,
@@ -3030,7 +3030,7 @@ func parseSSE(t *testing.T, body string) []sseFrame {
 			continue
 		}
 		var frame sseFrame
-		for _, line := range strings.Split(raw, "\n") {
+		for line := range strings.SplitSeq(raw, "\n") {
 			switch {
 			case strings.HasPrefix(line, "id: "):
 				frame.ID = strings.TrimPrefix(line, "id: ")

@@ -15,3 +15,11 @@ extends = ":workspace"
 [permissions.local-web-dev-broad.network]
 enabled = true
 allow_local_binding = true
+
+[mcp_servers.gopls]
+command = ".bin/gopls"
+args = ["mcp"]
+cwd = "."
+enabled = true
+required = false
+default_tools_approval_mode = "writes"

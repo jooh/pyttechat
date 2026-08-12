@@ -260,8 +260,8 @@ func (s *stream) Next() (llm.Event, error) {
 		if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			s.data = append(s.data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			s.data = append(s.data, strings.TrimPrefix(after, " "))
 		}
 	}
 }
@@ -384,7 +384,7 @@ func (s *stream) missingMessageText(payload map[string]any) string {
 	rawContent, _ := item["content"].([]any)
 	outputIndex := intField(payload, "output_index")
 	itemID := stringField(item, "id")
-	var text string
+	var text strings.Builder
 	for i, value := range rawContent {
 		part, ok := value.(map[string]any)
 		if !ok {
@@ -402,9 +402,9 @@ func (s *stream) missingMessageText(payload map[string]any) string {
 			continue
 		}
 		s.markTextSeen(key)
-		text += partText
+		text.WriteString(partText)
 	}
-	return text
+	return text.String()
 }
 
 func (s *stream) markTextSeen(key string) {
@@ -489,15 +489,15 @@ func textFromContentArray(value any) string {
 	if !ok {
 		return ""
 	}
-	var text string
+	var text strings.Builder
 	for _, item := range raw {
 		part, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		text += stringField(part, "text")
+		text.WriteString(stringField(part, "text"))
 	}
-	return text
+	return text.String()
 }
 
 func streamError(payload map[string]any) error {

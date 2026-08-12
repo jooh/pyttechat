@@ -38,14 +38,17 @@ GOLANGCI_LINT_VERSION := v2.12.2
 GOVULNCHECK_VERSION := v1.3.0
 GOSEC_VERSION := v2.26.1
 DEADCODE_VERSION := v0.45.0
+GOPLS_VERSION := v0.23.0
 
 GOIMPORTS := $(BIN_DIR)/goimports
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOVULNCHECK := $(BIN_DIR)/govulncheck
 GOSEC := $(BIN_DIR)/gosec
 DEADCODE := $(BIN_DIR)/deadcode
+GOPLS := $(BIN_DIR)/gopls
 COVERAGE_PROFILE ?= coverage.out
 COVERAGE_MIN ?= 95.0
+FUZZ_TIME ?= 30s
 
 GO_FILES := $(shell find . \( -path './.agent/skills/references/*/repo' -o -path './third_party' -o -path './.cache' -o -path './.bin' -o -path './bin' \) -prune -o -name '*.go' -print)
 
@@ -54,7 +57,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X 'example.com/llm-chat-web/internal/buildinfo.Version=$(VERSION)' -X 'example.com/llm-chat-web/internal/buildinfo.Commit=$(COMMIT)' -X 'example.com/llm-chat-web/internal/buildinfo.Date=$(DATE)'
 
-.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check test test-race coverage lint lint-fast vet vuln security deadcode build build-fake-responses image container-smoke serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit all-tests ci tools
+.PHONY: help cache-dirs fmt fmt-check imports imports-check tidy tidy-check mod-verify modernize modernize-check test test-race coverage fuzz lint lint-fast vet vuln security deadcode gopls build build-fake-responses image container-smoke serve-start serve-stop serve-status serve-restart serve-fake-start serve-fake-stop clean pre-commit all-tests ci tools
 
 help:
 	@printf '%s\n' \
@@ -65,15 +68,20 @@ help:
 		'  imports-check Check goimports formatting.' \
 		'  tidy          Run go mod tidy.' \
 		'  tidy-check    Check go.mod/go.sum tidiness.' \
+		'  mod-verify    Download and verify module cache contents.' \
+		'  modernize     Apply Go modernizers with go fix.' \
+		'  modernize-check Check whether go fix would change Go files.' \
 		'  test          Run unit tests.' \
 		'  test-race     Run unit tests with the race detector.' \
 		'  coverage      Generate coverage.out, print summary, and enforce minimum coverage.' \
+		'  fuzz          Fuzz untrusted input boundaries (FUZZ_TIME per target).' \
 		'  lint          Run golangci-lint.' \
 		'  lint-fast     Run fast local lint checks.' \
 		'  vet           Run go vet.' \
 		'  vuln          Run govulncheck.' \
 		'  security      Run gosec.' \
 		'  deadcode      Run deadcode as an advisory check.' \
+		'  gopls         Install the pinned gopls language server.' \
 		'  build         Build bin/pyttechat.' \
 		'  build-fake-responses Build bin/fake-responses.' \
 		'  image         Build the single-container image.' \
@@ -110,7 +118,12 @@ $(GOSEC): | $(BIN_DIR) cache-dirs
 $(DEADCODE): | $(BIN_DIR) cache-dirs
 	GOBIN=$(BIN_DIR) $(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
 
-tools: $(GOIMPORTS) $(GOLANGCI_LINT) $(GOVULNCHECK) $(GOSEC) $(DEADCODE)
+$(GOPLS): | $(BIN_DIR) cache-dirs
+	GOBIN=$(BIN_DIR) $(GO) install golang.org/x/tools/gopls@$(GOPLS_VERSION)
+
+tools: $(GOIMPORTS) $(GOLANGCI_LINT) $(GOVULNCHECK) $(GOSEC) $(DEADCODE) $(GOPLS)
+
+gopls: $(GOPLS)
 
 fmt:
 	$(GOFMT) -w $(GO_FILES)
@@ -139,6 +152,16 @@ tidy-check: cache-dirs
 	rm -rf "$$tmp_dir"; \
 	exit $$status
 
+mod-verify: cache-dirs
+	$(GO) mod download
+	$(GO) mod verify
+
+modernize: cache-dirs
+	$(GO) fix ./...
+
+modernize-check: cache-dirs
+	$(GO) fix -diff ./...
+
 test: cache-dirs
 	$(GO) test ./...
 
@@ -161,6 +184,11 @@ coverage: cache-dirs
 		} \
 		printf "coverage %.1f%% meets required %.1f%%\n", total, minimum; \
 	}'
+
+fuzz: cache-dirs
+	$(GO) test ./internal/markdown -run=^$$ -fuzz=^FuzzRendererRender$$ -fuzztime=$(FUZZ_TIME)
+	$(GO) test ./internal/markdown -run=^$$ -fuzz=^FuzzBlockStreamerChunking$$ -fuzztime=$(FUZZ_TIME)
+	$(GO) test ./internal/llm/openresponses -run=^$$ -fuzz=^FuzzOpenResponsesStream$$ -fuzztime=$(FUZZ_TIME)
 
 lint: cache-dirs $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...
@@ -410,6 +438,6 @@ clean:
 pre-commit: cache-dirs
 	pre-commit run --all-files
 
-all-tests: fmt-check imports-check tidy-check vet lint-fast test test-race coverage build
+all-tests: fmt-check imports-check tidy-check mod-verify modernize-check vet lint-fast test test-race coverage build
 
 ci: all-tests lint vuln security deadcode
